@@ -1,0 +1,261 @@
+package com.worldmargin.autospark.features.autospark.ui
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.Toast
+import com.worldmargin.autospark.features.autospark.model.SyncMode
+import com.worldmargin.autospark.features.autospark.model.TemplateGroup
+import com.worldmargin.autospark.features.autospark.model.TemplateOps
+import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
+import com.worldmargin.autospark.features.autospark.store.ConfigStore
+import com.worldmargin.autospark.features.autospark.ui.UiKit.asClickable
+import com.worldmargin.autospark.features.autospark.ui.UiKit.actionRow
+import com.worldmargin.autospark.features.autospark.ui.UiKit.button
+import com.worldmargin.autospark.features.autospark.ui.UiKit.column
+import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
+import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
+import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
+import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
+import com.worldmargin.autospark.features.autospark.ui.UiKit.row
+import com.worldmargin.autospark.features.autospark.ui.UiKit.text
+import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
+import java.util.UUID
+
+/** 编辑通用模板（模板组）的名称与文案。 */
+class TemplateEditActivity : Activity() {
+    companion object {
+        const val EXTRA_GROUP_ID = "group_id"
+    }
+
+    private var groupId: String? = null
+    private lateinit var nameField: EditText
+    private lateinit var editor: SparkEditor
+    private var existed = false
+    private var originalBody = ""
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        groupId = intent.getStringExtra(EXTRA_GROUP_ID)
+        val config = ConfigStore.load(this)
+        val group = config.group(groupId)
+        existed = group != null
+        originalBody = group?.body ?: ""
+
+        val headline = if (existed) "编辑模板" else "新建模板"
+
+        val root = column().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
+
+        root.addView(text("模板名称", 13f, UiKit.COLOR_DIM))
+        nameField =
+            EditText(this).apply {
+                setText(group?.name ?: "")
+                hint = "例如：死党组"
+                setSingleLine()
+            }
+        root.addView(nameField)
+
+        root.addView(text("文案脚本（把要发送的文案赋给 " + SparkScriptEngine.RESULT_VAR + "）", 13f, UiKit.COLOR_DIM))
+
+        editor =
+            SparkEditors.create(this, config).apply {
+                // 新建模板默认空白：要文案就从模板页的内置模板「添加为我的模板」，或用下面的「补全」写
+                setText(group?.body ?: "")
+                applyTypes(config)
+            }
+        root.addView(
+            editor.view,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+
+        root.addView(
+            actionRow {
+                addView(button("预览", primary = true).apply { setOnClickListener { showPreview() } })
+
+                addView(button("补全").apply { setOnClickListener { editor.showCompletion() } })
+                addView(button("格式化").apply { setOnClickListener { editor.format() } })
+                if (existed) {
+                    addView(button("宏").apply { setOnClickListener { pickMacros() } })
+                    addView(button("继承会话").apply { setOnClickListener { pickMembers() } })
+                    addView(button("删除").apply { setOnClickListener { confirmDelete() } })
+                }
+            },
+        )
+
+        setContentView(
+            column().apply {
+                setBackgroundColor(UiKit.COLOR_BG)
+                padSystemBars()
+                addView(titleBar(headline, action = saveAction(), onBack = { finish() }))
+                addView(divider())
+                addView(root, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0).apply { weight = 1f })
+            },
+        )
+    }
+
+    /** 勾选挂在本模板上的宏（宏在模板脚本之后执行）。 */
+    private fun pickMacros() {
+        val id = groupId ?: return
+        val name = nameField.text.toString().ifBlank { "本模板" }
+        MacroPicker.show(this, id, name) { }
+    }
+
+    private fun showPreview() {
+        val config = ConfigStore.load(this)
+        val body = editor.text
+        // 预览与实际执行一致：自定义函数注入 → 模板 → 挂在本模板上的宏
+        val program = config.composeProgram(body, config.macrosFor(listOfNotNull(groupId)))
+        val sample = SparkPreview.sample(config)
+        val rendered =
+            runCatching { SparkScriptEngine.render(program, SparkPreview.variables(sample)) }
+                .getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
+        AlertDialog
+            .Builder(this)
+            .setTitle("预览（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
+            .setMessage(rendered)
+            .setPositiveButton("好", null)
+            .show()
+    }
+
+    /** 标题栏右侧的保存动作。 */
+    private fun saveAction(): View = iconButton(UiKit.Icons.CHECK, "保存", primary = true, compact = true) { save() }
+
+    private fun save() {
+        val name = nameField.text.toString().trim()
+        val body = editor.text
+
+        if (existed) {
+            val bodyChanged = body != originalBody
+            ConfigStore.update(this) { config ->
+                val old = config.group(groupId)
+                val updated = old?.copy(name = name, body = body, updatedAt = System.currentTimeMillis())
+                config.copy(groups = config.groups.map { if (it.id == groupId) updated!! else it })
+            }
+            val group = ConfigStore.load(this).group(groupId)
+            if (bodyChanged && group != null) {
+                askSyncChildren(group)
+            } else {
+                finish()
+            }
+        } else {
+            val id = UUID.randomUUID().toString()
+            ConfigStore.update(this) { config ->
+                val group = TemplateGroup(id = id, name = name, body = body, updatedAt = System.currentTimeMillis())
+                config.copy(groups = config.groups + group)
+            }
+            finish()
+        }
+    }
+
+    /** 父模板内容改动后，询问如何同步子模板。 */
+    private fun askSyncChildren(group: TemplateGroup) {
+        val options = arrayOf("仅未修改的会话模板", "仅已修改的会话模板", "全部会话模板", "不同步")
+        AlertDialog
+            .Builder(this)
+            .setTitle("模板已修改，是否同步到子模板？")
+            .setItems(options) { _, which ->
+                if (which < 3) {
+                    val mode =
+                        when (which) {
+                            0 -> SyncMode.UNMODIFIED
+                            1 -> SyncMode.MODIFIED
+                            else -> SyncMode.ALL
+                        }
+                    ConfigStore.update(this) { config ->
+                        config.copy(
+                            conversations =
+                                TemplateOps.syncChildren(config, group.id, group.body, mode, System.currentTimeMillis()),
+                        )
+                    }
+                    Toast.makeText(this, "已同步", Toast.LENGTH_SHORT).show()
+                }
+                finish()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** 选择哪些会话继承本模板（勾选=继承本模板，取消=变为空白自定义）。 */
+    private fun pickMembers() {
+        val id = groupId ?: return
+        val config = ConfigStore.load(this)
+        val snapshots = config.snapshots.filter { !it.isGroup }
+        if (snapshots.isEmpty()) {
+            Toast.makeText(this, "暂无会话快照，请先在主页刷新会话", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val checked =
+            BooleanArray(snapshots.size) {
+                config.conversation(snapshots[it].conversationId)?.inheritFrom == id
+            }
+        AlertDialog
+            .Builder(this)
+            .setTitle("选择继承本模板的会话")
+            .setMultiChoiceItems(snapshots.map { it.displayName.ifBlank { "(无名)" } }.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }.setPositiveButton("应用") { _, _ ->
+                val now = System.currentTimeMillis()
+                ConfigStore.update(this) { cfg ->
+                    val group = cfg.group(id) ?: return@update cfg
+                    var list = cfg.conversations
+                    snapshots.forEachIndexed { index, snapshot ->
+                        val current = list.firstOrNull { it.conversationId == snapshot.conversationId }
+                        if (checked[index]) {
+                            if (current?.inheritFrom != id) {
+                                val next = TemplateOps.inheritFrom(group, snapshot.conversationId, current?.autoSync ?: false, now)
+                                list =
+                                    if (current == null) {
+                                        list + next
+                                    } else {
+                                        list.map { if (it.conversationId == snapshot.conversationId) next else it }
+                                    }
+                            }
+                        } else if (current != null && current.inheritFrom == id) {
+                            val next = TemplateOps.blank(current.conversationId, current.body, now)
+                            list = list.map { if (it.conversationId == snapshot.conversationId) next else it }
+                        }
+                    }
+                    cfg.copy(conversations = list)
+                }
+                Toast.makeText(this, "已更新继承关系", Toast.LENGTH_SHORT).show()
+            }.setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun confirmDelete() {
+        AlertDialog
+            .Builder(this)
+            .setTitle("删除模板？")
+            .setMessage("挂在该模板下的会话模板会变为「空白（自定义）」，内容保留。")
+            .setPositiveButton("删除") { _, _ ->
+                ConfigStore.update(this) { config ->
+                    val conversations =
+                        config.conversations.map { child ->
+                            if (child.inheritFrom == groupId) {
+                                TemplateOps.blank(child.conversationId, child.body, System.currentTimeMillis())
+                            } else {
+                                child
+                            }
+                        }
+                    config.copy(
+                        groups = config.groups.filterNot { it.id == groupId },
+                        conversations = conversations,
+                        defaultGroupId = config.defaultGroupId.takeIf { it != groupId },
+                    )
+                }
+                finish()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::editor.isInitialized) editor.release()
+    }
+}

@@ -1,0 +1,160 @@
+# DouMCP（抖M）- 抖音 MCP 模块
+
+## 项目概览
+
+- **类型**：LSPosed 模块（libxposed API 102），注入抖音进程内启动 MCP 服务（Ktor Streamable HTTP，端口 19320，Bearer 鉴权）
+- **宿主**：抖音 `com.ss.android.ugc.aweme`
+- **结构**：单模块 Gradle 工程，Kotlin，`app/` 下分包
+
+```
+app/src/main/java/io/github/yfishyon/doumcp/
+  ModuleMainKt.kt        入口：进程判断、hook 安装、热重载
+  McpServerHost.kt       MCP 服务宿主（Ktor + 各功能包工具注册）
+  ModulePrefs.kt         用户配置（端口/密钥/开关，FastKV 原生 API）
+  SettingsInjector.kt    抖音设置页注入"抖M设置"
+  core/                  共享设施：HostRuntime（上下文/classLoader/模块实例单例）/ DexKitSupport（桥懒加载+缓存）/
+                         ResolvedCache / Reflect / ModLog（libxposed 日志）/ DouToastHelper /
+                         McpToolExt（toolCall 输出校验 + 取参助手）/ ObjectDump（对象深度 dump）/ ValueFormat（值展示）
+  features/              按功能分包，每个功能包内固定 tool / bridge / resolver 三层：
+    account/             账号列表/切换/用户资料
+    im/                  会话/消息/表情/输入状态（最大的功能包）
+    video/               视频详情/用户作品
+    comment/             评论读取/发布
+    search/              综合搜索
+    system/              系统工具（getCurrentTime 等）
+    database/            数据库工具（见下）
+    devtool/             逆向调试（**仅 debug 包注册**）：DexKit 结构查询 / 运行时反射 / 动态 hook
+```
+
+## 构建与测试
+
+```bash
+./gradlew assembleDebug    # debug 包测试（别用 --no-daemon）
+```
+
+- 构建出 debug 包后安装到设备，等 10 秒热重载生效
+- **debug 与 release 使用同一签名**（`release.keystore`，见 `app/build.gradle.kts`），可直接覆盖安装、互不丢登录态
+- debug 包注册逆向调试工具（`features/devtool`）；release 包用 `BuildConfig.DEBUG` 门控 + R8 裁剪，**不含**这组工具
+- 日志走 libxposed 通道（`ModLog`），logcat 过滤 DouMCP（tag 前缀是 LSPosedLogDaemon）
+- 用户提示：MCP 服务启动后、DexKit 首次建索引完成后都会弹抖音风格 toast（DouToastHelper）
+- 热重载不生效（日志无"热重载完成"）→ 强停抖音重新启动，等 25 秒
+- 热重载后新实例**不重走 `onModuleLoaded`**：`ModLog.bind` 与 `HostRuntime.module` 要在 `onHotReloaded` 里补绑
+
+## 硬性约束
+
+1. **代码和注释里绝不写混淆的类名/方法名/字段名**（未混淆固定名可以）。注释一律陈述式，不写"实测/调试/临时/看完删"这类字样
+2. **禁止猜任何键值**：优先逆向（jadx / smali 注解 / 模型 toString）→ 运行时确认 → 必要时临时 dump（看完即删）
+3. **确定键值后去掉防御性编程**：不层层兜底、不候选轮询、不写死白名单（运行时过滤，有多少给多少）
+4. 改代码用 Edit/Write；python 只允许真正的批量替换
+5. 测试一律 debug 包；群聊参数用 conversationId
+6. **需登录的功能入口先查 `AccountBridge.getCurrentUserId`**，未登录返回 `{"ok":false,"error":"未登录"}`
+7. **MCP 工具返回统一 `{"ok":true/false,...}` JSON 结构**——`toolCall` 会校验（非法 JSON / 缺 ok 字段会被拦截）；豁免：`ping`（裸 pong，连通性检查）
+8. 调试代码用完即删；诊断性 Log.i 不留，只留错误与关键节点
+9. **每次 commit 前必须跑 `ktlint --format "app/src/main/java/**/*.kt"` 并确认复查无错误**
+10. **commit message 一律用中文**
+
+## 日志
+
+- 只用 `core/ModLog`（libxposed 通道，入口 `onModuleLoaded` 时 `ModLog.bind(this)`）
+- `i`：启动/热重载等关键节点；`w`：降级路径；`e`：异常与定位失败。禁止 `android.util.Log`
+
+## 存储
+
+- **FastKV 原生 API**（`io.github.billywei01:fastkv`）：`FastKV.Builder(context, name).build()` + putXxx/getXxx，完全不用 SharedPreferences 接口
+- 配置用 `ModulePrefs`，DexKit 定位缓存用 `ResolvedCache`；key 不要改（老数据读不到）
+- DexKit 缓存 key 携带宿主版本：`ResolvedCache.versionedKey(versionCode, feature)`
+
+## 新增一个功能（feat）的步骤
+
+1. 建包 `features/<feat>/{tool,bridge,resolver}`
+2. `resolver/` 写定位器：matcher 用 DexKit 全等字符串锚点，走 `DexKitSupport.resolveCached`（缓存样板已收敛），候选类搜索用 `searchCandidatesParallel`（并发）
+3. `bridge/` 写能力桥：入口做登录检查，返回统一 JSON（带 ok 字段）；字段值运行时过滤，不写白名单
+4. `tool/` 写注册：`internal fun Server.registerXxxTools(hostClassLoader)`，参数用 `stringArg/intArg`，包在 `withContext(Dispatchers.IO) + toolCall { }` 里
+5. `McpServerHost.registerTools` 的 registrations 列表挂上注册函数
+6. 描述文本写清楚参数含义与取值来源（方便 MCP 客户端使用）
+
+## 定位模式（DexKit）
+
+- 字符串/类锚点**必须全等匹配**（`StringMatchType.Equals`），锚点抄完整
+- 定位结果两级缓存：内存 + FastKV（按宿主版本隔离）；缓存全命中不建 DexKit 索引
+- **缓存值格式 `类名#方法名#参数类型逗号串`**（必须带参数类型，否则同名重载还原会取错）；读到两段老格式时：仅当同名方法唯一才认，否则当未命中重新定位并写新格式
+- 候选类搜索用 `DexKitSupport.searchCandidatesParallel`（并发，不要写串行循环）
+- 抽象方法不能 hook；Retrofit 接口找实现类或调用方
+- 调宿主挂起方法：Proxy 宿主 classloader 的 Continuation + 宿主 EmptyCoroutineContext；挂起标记用 `is Enum<*> && name == "COROUTINE_SUSPENDED"` 判定
+
+## 评论发布（features/comment）
+
+- 走宿主自己的发布接口，不手拼请求：Retrofit 服务入口 → 按主站域名建 Retrofit → `create(评论接口)`，
+  实参按每个参数上的表单字段名填充（只给业务字段赋值，其余留空，Retrofit 会跳过空值字段）
+- 参数默认值取自宿主的发布参数对象（`need_risk_check=1`、`publish_scene=unknown`、`is_commerce=0` 等）
+- `enter_from` 是页面来源，值域是宿主的页面枚举（推荐流 `homepage_hot` 是其中的基准值）
+- **表情包**：清单与宿主评论表情面板同源，走宿主的表情资源接口（纯 Retrofit 接口，端点写在注解里、
+  检索不到，按方法名全等定位；接口实例由宿主的 IM 网络能力按 IM 基础地址创建）；
+  发布参数从表情模型取（ID、类型、表情包 ID、动图地址、宽高、动图格式、作者），类型同时充当来源标记
+- **表情集**：列表走宿主的表情商店取数入口（锚点串写在方法体里），明细按资源 ID 调表情资源接口——
+  资源 ID 要按宿主自己的写法传（单元素列表的字面量，形如 `[123]`）；明细响应每项是
+  「表情集 + 表情列表」的包装对象，两个字段名都混淆，按类型取
+- 推荐列表里的表情没有名字；带文字描述的表情只在表情集里。列过的表情按 ID 记进表情目录，
+  发评论时凭 ID 取对象（先查目录，未命中再刷一次推荐列表）
+- **图片**：先复用宿主的上传入口拿到对象键（上传凭证与对象存储配置都由宿主内部处理），
+  再把每张图摊成六个并行逗号分隔串（地址、宽、高、格式、来源），六串按同一顺序对应；
+  定位信息仅在相册定位开关打开时才带，模块不带
+
+## 互动（features/interact）
+
+- **点赞 / 取消点赞**：宿主把端点（`commit/item/digg`）与参数写在**一个跨平台网络封装方法**里（类名混淆，
+  靠完整端点串 `https://aweme.snssdk.com/aweme/v1/commit/item/digg/` 全等定位）；动作位 `1` 赞 / `0` 取消。
+  调它比手拼请求省事——公共参数与签名由宿主自己补齐
+- **收藏 / 取消收藏**：宿主有个**未混淆**的 Retrofit 接口（`AwemeCollectRequester$IApi`，端点
+  `/aweme/v1/aweme/collect/`，参数全是 `@Query`）；动作位 `1` 收藏 / `0` 取消，`aweme_type` 必须取作品的
+  真实类型（从作品详情解析）。实例用 `HostRetrofit` 生成；返回值是**宿主改过名的 RxJava `Single`**——
+  订阅方法改名了，要**按参数类型（`SingleObserver`）定位**，不能用 `blockingGet`
+- **喜欢 / 收藏列表**：复用作品列表入口，端点 `/aweme/v1/aweme/favorite/`（喜欢）、`/aweme/v1/aweme/listcollection/`（收藏）
+- 通用设施：`core/HostRetrofit`（宿主 Retrofit 工厂：服务入口 → 按主站域名建 Retrofit → 生成接口代理）、
+  `core/SuspendInvoker`（阻塞调宿主挂起方法）
+
+## 数据库工具（features/database）
+
+- 工具：listDatabases / listTables / queryDatabase / executeDatabaseStatement（camelCase 统一）
+- 输出为扁平 KV 文本（「N row(s):」+「列=值, 列=值」）；写语句模式「Statement executed.」
+- 加密库（encrypted_ 前缀）用宿主 WCDB 兼容层打开，密钥由文件名里的 uid 推导（任意账号的库都能解）
+- 连接缓存（密钥派生耗时，懒建）；宿主删库/查询失败时弃连接重建
+- IM 库时间戳是毫秒（13 位）；个别 ext 字段是秒（10 位），换算前先看位数
+- **不要在宿主首次 WCDB 使用前触发其类初始化**（静态初始化依赖宿主上下文，抢跑会崩宿主 IM 启动）；也**不要在 hook 回调栈内同步 unhook**（框架等待回调退出会自死锁）
+
+## 逆向调试（features/devtool，仅 debug 包）
+
+- **只在 debug 包注册**：`McpServerHost.registerTools` 与 `ModuleMain.onHotReloading` 的清理由 `BuildConfig.DEBUG` 门控；
+  release 里 R8 会把死分支与相关类整体裁掉（实测：release 的 dex 搜不到任何 devtool 字符串）
+- 三层：静态定位 → `bridge/DexSearchBridge`；运行时反射 → `bridge/RuntimeBridge`；动态 hook → `bridge/WatchBridge`；
+  定位/求值助手在 `resolver/`（`TargetResolver` 路径解析、`Expr` 参数表达式、`InvokerSupport` 调用）
+- **DexKit 查询**：结构条件优先；字符串匹配用 `StringMatchType` 枚举名，**默认 `Contains`**（速度 Equals > StartsWith > EndsWith > Contains > SimilarRegex）；
+  给定 `class` 用 `searchInClass`（`declaredClass` 要全表逐条比对，慢几十倍）；批量用 `batchFind*UsingStrings`（**组内 AND**）
+- **对象路径**：`类全名#静态字段.字段[下标]`；**参数表达式**：`{"ref"} / {"handle"} / {"new"} / {"static"} / {"class"} / {"enum"} / {"proxy"}`
+- **调用/构造走 libxposed `Invoker`**：默认 `Type.ORIGIN`（跳过全部 hook、行为可预期），`chain=full` 走完整链；
+  **不缓存调用器**（框架 `getInvoker` 每次返回新对象、`setType` 原地改字段，缓存会串类型）
+- **动态 hook**：同一目标再次 watch 用**相同 id 原子替换**（不摘再挂）；摘钩在工具线程同步执行（**绝不在 hook 回调栈内**），
+  移表与摘钩同处 `installLock`；记录在回调当场转文本（不长期强引用宿主对象），缓冲满后只计数；
+  `deoptimize` 只反内联**调用方**（A 内联了 B 时要反内联 A）
+- **热重载**：`WatchBridge.stop()` 清注册表 + `ObjectHandles.clear()`；**不在热重载里释放 DexKit 桥**（close 要等写锁，会拖住热重载）
+- 运行时工具**只对 MCP 所在进程（主进程）生效**；失败要明确报错，不静默兜底
+
+## 热重载
+
+- onHotReloading 停服务（给排空时间）+ 停自有线程（executor shutdown，契约要求）
+- 端口预检失败重试 3 次再放弃（旧服务排空竞态）
+
+## MCP 服务自愈（McpServerHost 内）
+
+- 服务被要求启动即派生守护线程 `doumcp-watchdog`（daemon），随 `stop()` 关停；**不依赖 started**，
+  首次启动失败（端口被占）也会持续重试
+- 探针：裸 `Socket` 发最小 `GET /api`（用启动时捕获的 token），connect 1s / read 2s 超时；
+  走完整 HTTP 链路，读超时即判「端口在听但卡死」→ 重建
+- 重建走 `restart()`：拆旧引擎后复用 `startBlocking` 的端口预检与 launchSeq 守卫，
+  **绝不调用 `stop()`**（会关停队列并 interrupt 调用线程）
+- 连续失败按 20/40/80/160/300s 退避，重建成功即刻复位；重建不弹 toast（只记日志）
+- `stop()` 的阻塞操作（interrupt/join/engine.stop）一律在**锁外**，避免与守护线程抢锁互等
+- 重建会丢弃全部 MCP 会话，客户端需重新 initialize
+- **不给全局「在飞请求」设卡死阈值**：发布/上传类工具合法阻塞 180s（`PublishUploader` /
+  `CommentImageUploader` 的 TIMEOUT_MS），阈值低于 210s 会误杀正常发布
+

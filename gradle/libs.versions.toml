@@ -1,0 +1,16 @@
+[versions]
+agp = "9.2.1"
+libxposed-api = "102.0.0"
+rhino = "1.7.15"
+sora-editor = "0.24.4"
+webkit = "1.12.1"
+
+[plugins]
+agp-app = { id = "com.android.application", version.ref = "agp" }
+
+[libraries]
+libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "libxposed-api" }
+rhino = { group = "org.mozilla", name = "rhino", version.ref = "rhino" }
+sora-editor-bom = { group = "io.github.rosemoe", name = "editor-bom", version.ref = "sora-editor" }
+sora-editor = { group = "io.github.rosemoe", name = "editor" }
+webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }

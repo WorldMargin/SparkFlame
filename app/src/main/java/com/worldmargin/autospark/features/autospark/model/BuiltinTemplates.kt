@@ -1,0 +1,72 @@
+package com.worldmargin.autospark.features.autospark.model
+
+/** 内置文案模板（模板页里可直接「添加为我的模板」或一键复制给会话）。 */
+data class BuiltinTemplate(
+    val id: String,
+    val name: String,
+    val desc: String,
+    val body: String,
+)
+
+/**
+ * 内置模板：只是**可选**的起点，不会自动套给任何会话。
+ *
+ * 默认状态是「空白模板」——没选模板的会话不发消息，绝不偷偷套用内置文案。
+ */
+object BuiltinTemplates {
+    /** 空白：什么都不发。 */
+    val BLANK =
+        BuiltinTemplate(
+            id = "blank",
+            name = "空白模板",
+            desc = "不发送（默认）",
+            body = "",
+        )
+
+    /** 按时间选招呼语，凌晨不说早安。 */
+    val GREETING =
+        BuiltinTemplate(
+            id = "greeting",
+            name = "按时问候",
+            desc = "夜深了 / 早安 / 午安 / 下午好 / 晚上好 + 续火花",
+            body =
+                """var who = ctx.name || "朋友";
+var hour = parseInt(ctx.time.split(":")[0], 10);
+var hi = hour < 5 ? "夜深了" : hour < 11 ? "早安" : hour < 14 ? "午安" : hour < 18 ? "下午好" : hour < 23 ? "晚上好" : "夜深了";
+${'$'}spark_result${'$'}.push(ctx.pick([
+  hi + "～" + who + "，今天也要记得续火花哦",
+  "火花打卡 " + ctx.date + "：" + who + "，已经 " + ctx.days + " 天啦",
+  "滴——" + who + "，第 " + ctx.days + " 天的火花，别让它灭了"
+]));""",
+        )
+
+    /** 只报天数与日期，简短不带招呼。 */
+    val STREAK =
+        BuiltinTemplate(
+            id = "streak",
+            name = "火花天数打卡",
+            desc = "带上已连续天数与当天日期",
+            body =
+                """var who = ctx.name || "朋友";
+${'$'}spark_result${'$'}.push("火花打卡 " + ctx.date + "：" + who + "，已经 " + ctx.days + " 天啦");""",
+        )
+
+    /** 最短的一句话提醒。 */
+    val REMIND =
+        BuiltinTemplate(
+            id = "remind",
+            name = "简短提醒",
+            desc = "一两句短提醒，不啰嗦",
+            body =
+                """var who = ctx.name || "朋友";
+${'$'}spark_result${'$'}.push(ctx.pick([
+  who + "，滴——打卡啦",
+  who + "，别忘了咱们的火花～",
+  who + "，今天也来续一下火花吧"
+]));""",
+        )
+
+    val ALL = listOf(BLANK, GREETING, STREAK, REMIND)
+
+    fun byId(id: String): BuiltinTemplate? = ALL.firstOrNull { it.id == id }
+}

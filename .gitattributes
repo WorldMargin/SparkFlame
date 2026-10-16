@@ -1,0 +1,19 @@
+# 统一行尾：源码用 LF（与上游一致），Windows 脚本用 CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制别做行尾转换
+*.ttf binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.jar binary
+*.apk binary
+*.jks binary
+*.keystore binary
+*.xz binary

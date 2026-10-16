@@ -38,6 +38,9 @@ interface SparkEditor {
     /** 主动唤起补全。 */
     fun showCompletion()
 
+    /** 在当前光标 / 选区处插入文本（「粘贴」按钮用）。 */
+    fun insert(text: String)
+
     /** 快速格式化：清掉不可见字符 / 智能引号 / Markdown 围栏，并尽量重排缩进。 */
     fun format()
 
@@ -77,6 +80,19 @@ class SoraSparkEditor(
 
     override fun showCompletion() {
         editor.showSparkCompletion()
+    }
+
+    override fun insert(text: String) {
+        if (text.isEmpty()) return
+        try {
+            val current = editor.text.toString()
+            val at = editor.cursor.left.coerceIn(0, current.length)
+            editor.setText(current.substring(0, at) + text + current.substring(at))
+            val caret = at + text.length
+            editor.setSelection(caret, caret)
+        } catch (error: Throwable) {
+            ModLog.w("原生编辑器插入文本失败: $error")
+        }
     }
 
     override fun format() {
@@ -119,6 +135,10 @@ class MonacoSparkEditor(
         web.isVerticalScrollBarEnabled = false
         web.isFocusable = true
         web.isFocusableInTouchMode = true
+        // 关掉 WebView 的原生长按选择：否则长按会冒出手柄与系统的复制 / 全选工具栏，
+        // 和 Monaco 自己的选区打架。长按由页面侧当作普通触摸处理。
+        web.isLongClickable = false
+        web.setOnLongClickListener { true }
         web.setBackgroundColor(BACKGROUND)
         web.addJavascriptInterface(Bridge(), "AndroidEditor")
         web.webViewClient =
@@ -165,6 +185,12 @@ class MonacoSparkEditor(
         eval("window.spark && window.spark.triggerSuggest()")
     }
 
+    override fun insert(text: String) {
+        if (text.isEmpty()) return
+        cached = if (cached.isEmpty()) text else cached
+        eval("window.spark && window.spark.insertText(" + JSONObject.quote(text) + ")")
+    }
+
     override fun format() {
         eval("window.spark && window.spark.format()")
     }
@@ -174,6 +200,22 @@ class MonacoSparkEditor(
         runCatching {
             val manager = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             manager.showSoftInput(web, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    /**
+     * 收起软键盘（页面判断出这是滑动而不是点击时调用）。
+     *
+     * 编辑器一旦获得过焦点，WebView 会把输入法一直挂在自己的可编辑节点上 ——
+     * 之后再滑动也会把键盘带回来，所以滑动时要在网页侧主动 blur，这里再把输入法收掉。
+     */
+    private fun hideKeyboard() {
+        runCatching {
+            // WebView 自己还拿着焦点时 hideSoftInputFromWindow 经常不生效，
+            // 先把焦点清掉（再次点击时 onFocus 会重新 requestFocus）。
+            web.clearFocus()
+            val manager = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            manager.hideSoftInputFromWindow(web.windowToken, 0)
         }
     }
 
@@ -221,6 +263,12 @@ class MonacoSparkEditor(
                 web.requestFocus()
                 showKeyboard()
             }
+        }
+
+        /** 页面判断这是滑动（不是点击）：把输入法收掉，免得一滑键盘就回来。 */
+        @JavascriptInterface
+        fun onBlur() {
+            container.post { hideKeyboard() }
         }
     }
 

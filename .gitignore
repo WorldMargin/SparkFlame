@@ -22,3 +22,4 @@ release-signing.properties
 # 构建日志与临时目录
 build_log*.txt
 tmp/
+build_status.txt

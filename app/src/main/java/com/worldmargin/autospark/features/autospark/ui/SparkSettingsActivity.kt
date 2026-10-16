@@ -24,6 +24,11 @@ import com.worldmargin.autospark.features.autospark.model.ConfigCodec
 import com.worldmargin.autospark.features.autospark.model.ConversationTemplate
 import com.worldmargin.autospark.features.autospark.model.MacroScript
 import com.worldmargin.autospark.features.autospark.model.SparkConfig
+import com.worldmargin.autospark.features.autospark.model.TransferSelection
+import com.worldmargin.autospark.features.autospark.model.fullSelection
+import com.worldmargin.autospark.features.autospark.model.mergeFrom
+import com.worldmargin.autospark.features.autospark.model.subsetOf
+import com.worldmargin.autospark.features.autospark.model.withDependencies
 import com.worldmargin.autospark.features.autospark.model.TemplateGroup
 import com.worldmargin.autospark.features.autospark.model.TemplateOps
 import com.worldmargin.autospark.features.autospark.model.TemplateSource
@@ -40,25 +45,33 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_WARN
 import com.worldmargin.autospark.features.autospark.ui.UiKit.asClickable
 import com.worldmargin.autospark.features.autospark.ui.UiKit.actionRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.button
+import com.worldmargin.autospark.features.autospark.ui.UiKit.animateFold
+import com.worldmargin.autospark.features.autospark.ui.UiKit.bottomBar
 import com.worldmargin.autospark.features.autospark.ui.UiKit.card
 import com.worldmargin.autospark.features.autospark.ui.UiKit.column
 import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
 import com.worldmargin.autospark.features.autospark.ui.UiKit.enterFromLeft
 import com.worldmargin.autospark.features.autospark.ui.UiKit.enterFromRight
+import com.worldmargin.autospark.features.autospark.ui.UiKit.flatRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.icon
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
+import com.worldmargin.autospark.features.autospark.ui.UiKit.linkRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.menuRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.navBar
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
 import com.worldmargin.autospark.features.autospark.ui.UiKit.rounded
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.scroll
+import com.worldmargin.autospark.features.autospark.ui.UiKit.sectionCard
+import com.worldmargin.autospark.features.autospark.ui.UiKit.filterGroups
+import com.worldmargin.autospark.features.autospark.ui.UiKit.searchRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.sectionTitle
 import com.worldmargin.autospark.features.autospark.ui.UiKit.segmented
 import com.worldmargin.autospark.features.autospark.ui.UiKit.spacer
 import com.worldmargin.autospark.features.autospark.ui.UiKit.switchRow
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
+import com.worldmargin.autospark.features.autospark.ui.UiKit.textContent
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -103,14 +116,52 @@ class SparkSettingsActivity : Activity() {
     /** 待写入文件的配置 JSON（导出走系统文件选择，回来才写）。 */
     private var pendingExport = ""
 
+    /** 导出页勾选的条目；[exportExcluded] 记录用户手动取消过的（依赖自动勾选不再加回来）。 */
+    private var exportSelection = TransferSelection()
+    private var exportExcluded = emptySet<String>()
+
+    /** 导入页：选中文件解析出的配置 + 勾选。 */
+    private var importSource: SparkConfig? = null
+    private var importSelection = TransferSelection()
+
+    /** 页面上的勾选框，按「类型:ID」索引，自动勾选后用来同步界面。 */
+    private val transferChecks = mutableMapOf<String, CheckBox>()
+
+    /** 等宿主探活回执的回调（同一时刻只会有一次探活）。 */
+    private var hostAliveWaiter: ((Boolean) -> Unit)? = null
+
+    /** 「续火花」页的搜索关键字（重建页面后恢复用）。 */
+    private var sparkQuery = ""
+
+    /** 模板页 / 宏函数页的搜索关键字。 */
+    private var templateQuery = ""
+    private var macroQuery = ""
+
+    /** 「续火花」页两个分组卡片的折叠状态。 */
+    private var singlesCollapsed = false
+    private var groupsCollapsed = false
+
     /** 多选中的会话 ID。 */
     private val selected = linkedSetOf<String>()
 
     /** 「续火花」页里会话行 → 勾选框，用于原地同步勾选状态。 */
     private val rowChecks = mutableMapOf<String, CheckBox>()
 
+    /** 模板卡片里可折叠的那块（派生列表 + 操作行）与它的三角图标：点击只动这块的高度，不重建页面。 */
+    private val templateFolds = mutableMapOf<String, Pair<View, TextView>>()
+
+    /** 会话行视图：勾选后给整行加底色，免得"选中了但看不出来"。 */
+    private val rowViews = mutableMapOf<String, View>()
+
     private var selectionBar: View? = null
     private var selectionCount: TextView? = null
+
+    /** 勾选行的底色（淡蓝，和卡片底色区分得开又不刺眼）。 */
+    private val COLOR_SELECTED = 0x223B7CFF
+
+    /** 顶部「发送…」按钮的文字：勾选数一变化就要跟着改，不能等重建页面。 */
+    private var sendLabel: TextView? = null
+    private var renewalCount = 0
 
     private val snapshotReceiver =
         object : BroadcastReceiver() {
@@ -118,6 +169,13 @@ class SparkSettingsActivity : Activity() {
                 context: Context?,
                 intent: Intent?,
             ) {
+                if (intent?.action == ConfigContract.ACTION_HOST_ALIVE) {
+                    hostAliveWaiter?.let { waiter ->
+                        hostAliveWaiter = null
+                        waiter(true)
+                    }
+                    return
+                }
                 if (intent?.action == ConfigContract.ACTION_SEND_DONE) {
                     awaitingSendResult = false
                     val summary = intent.getStringExtra(ConfigContract.EXTRA_SUMMARY).orEmpty()
@@ -190,7 +248,7 @@ class SparkSettingsActivity : Activity() {
                 Toast.makeText(this, if (ok) "配置已导出" else "导出失败", Toast.LENGTH_SHORT).show()
             }
 
-            REQUEST_IMPORT_CONFIG -> applyImportedConfig(uri)
+            REQUEST_IMPORT_CONFIG -> loadImportSource(uri)
         }
     }
 
@@ -203,6 +261,7 @@ class SparkSettingsActivity : Activity() {
         val filter = IntentFilter().apply {
             addAction(ConfigContract.ACTION_SNAPSHOT_UPDATED)
             addAction(ConfigContract.ACTION_SEND_DONE)
+            addAction(ConfigContract.ACTION_HOST_ALIVE)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(snapshotReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -235,20 +294,103 @@ class SparkSettingsActivity : Activity() {
 
     /** 把发送请求发给抖音进程（消息发送能力在宿主里）。 */
     private fun sendNow(targets: List<String>) {
-        awaitingSendResult = true
-        sendBroadcast(
-            Intent(ConfigContract.ACTION_SEND_NOW)
-                .putStringArrayListExtra(ConfigContract.EXTRA_TARGETS, ArrayList(targets)),
-        )
-        Toast.makeText(this, "已请求发送，等待抖音返回结果…", Toast.LENGTH_SHORT).show()
-        // 抖音没在运行 / 模块没注入时不会有回执，超时给个提示
-        pageHost.postDelayed({
-            if (awaitingSendResult) {
-                awaitingSendResult = false
-                Toast.makeText(this, "没等到结果：抖音可能没在运行（打开抖音后再试）", Toast.LENGTH_LONG).show()
-            }
-        }, SEND_TIMEOUT_MS)
+        withHostOnline {
+            awaitingSendResult = true
+            sendBroadcast(
+                Intent(ConfigContract.ACTION_SEND_NOW)
+                    .putStringArrayListExtra(ConfigContract.EXTRA_TARGETS, ArrayList(targets)),
+            )
+            Toast.makeText(this, "已请求发送，等待抖音返回结果…", Toast.LENGTH_SHORT).show()
+            pageHost.postDelayed({
+                if (awaitingSendResult) {
+                    awaitingSendResult = false
+                    Toast.makeText(this, "没等到结果：抖音可能刚被系统冻结，稍后重试", Toast.LENGTH_LONG).show()
+                }
+            }, SEND_TIMEOUT_MS)
+        }
     }
+
+    // ------------------------------------------------------------------ 握手机制
+
+    /**
+     * 确认宿主（抖音进程）在线后再执行 [action]。
+     *
+     * 抖音没运行时，发给它的广播没人接，表现就是「点了没反应」（手动续火花尤其明显）。
+     * 这里先看存活时间戳，过期就发探活广播、等回执；还是没回执就引导用户打开抖音，
+     * 打开后再探一次，成功就自动把原来那件事做掉。
+     */
+    private fun withHostOnline(action: () -> Unit) {
+        val config = ConfigStore.load(this)
+        val fresh = System.currentTimeMillis() - config.hostAliveAt < HOST_FRESH_MS
+        if (fresh) {
+            action()
+            return
+        }
+        Toast.makeText(this, "正在确认抖音是否在运行…", Toast.LENGTH_SHORT).show()
+        waitHostAlive(HOST_PING_MS) { alive ->
+            if (alive) {
+                action()
+                return@waitHostAlive
+            }
+            promptOpenHost { opened ->
+                if (!opened) return@promptOpenHost
+                // 抖音冷启动要几秒才把模块装载完，稍等再探一次
+                pageHost.postDelayed({
+                    waitHostAlive(HOST_PING_MS * 3) { aliveAfterOpen ->
+                        if (aliveAfterOpen) {
+                            action()
+                        } else {
+                            Toast
+                                .makeText(this, "抖音已打开但还没就绪，请稍后再点一次", Toast.LENGTH_LONG)
+                                .show()
+                        }
+                    }
+                }, HOST_BOOT_WAIT_MS)
+            }
+        }
+    }
+
+    /** 发探活广播并在 [timeoutMs] 内等回执。 */
+    private fun waitHostAlive(
+        timeoutMs: Long,
+        callback: (Boolean) -> Unit,
+    ) {
+        hostAliveWaiter = callback
+        sendBroadcast(Intent(ConfigContract.ACTION_PING_HOST))
+        pageHost.postDelayed({
+            hostAliveWaiter?.let { waiter ->
+                hostAliveWaiter = null
+                waiter(false)
+            }
+        }, timeoutMs)
+    }
+
+    /** 提示用户先打开抖音（宿主不在，发什么都不生效）。 */
+    private fun promptOpenHost(callback: (Boolean) -> Unit) {
+        AlertDialog
+            .Builder(this)
+            .setTitle("抖音没在运行")
+            .setMessage("续火花要在抖音进程里执行。现在打开抖音，等它就绪后会自动继续刚才的操作。")
+            .setPositiveButton("打开抖音") { _, _ ->
+                val launched = openDouyin()
+                if (launched) {
+                    Toast.makeText(this, "正在打开抖音，稍等几秒会自动继续…", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "没找到抖音，请手动打开", Toast.LENGTH_SHORT).show()
+                }
+                callback(launched)
+            }.setNegativeButton("取消") { _, _ -> callback(false) }
+            .show()
+    }
+
+    /** 用启动 Intent 打开抖音（拿不到就返回 false）。 */
+    private fun openDouyin(): Boolean =
+        runCatching {
+            val intent = packageManager.getLaunchIntentForPackage(DOUYIN_PACKAGE) ?: return false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            true
+        }.getOrDefault(false)
 
     private fun render() {
         val config = ConfigStore.load(this)
@@ -355,14 +497,12 @@ class SparkSettingsActivity : Activity() {
                             row().apply {
                                 setPadding(0, dp(8), 0, 0)
                                 addView(
-                                    button("清除手动标记").apply {
-                                        setOnClickListener {
-                                            ConfigStore.update(this@SparkSettingsActivity) {
-                                                it.copy(forcedRenew = emptySet(), forcedSkip = emptySet()).pruneTemplates(System.currentTimeMillis())
-                                            }
-                                            Toast.makeText(this@SparkSettingsActivity, "已清除手动标记", Toast.LENGTH_SHORT).show()
-                                            render()
+                                    iconButton(UiKit.Icons.CLEAR_ALL, "清除手动标记", compact = true) {
+                                        ConfigStore.update(this@SparkSettingsActivity) {
+                                            it.copy(forcedRenew = emptySet(), forcedSkip = emptySet()).pruneTemplates(System.currentTimeMillis())
                                         }
+                                        Toast.makeText(this@SparkSettingsActivity, "已清除手动标记", Toast.LENGTH_SHORT).show()
+                                        render()
                                     },
                                 )
                             },
@@ -402,25 +542,37 @@ class SparkSettingsActivity : Activity() {
                 )
             }
 
+            SUB_EXPORT -> buildExportPage(config, body)
+
+            SUB_IMPORT -> buildImportPage(config, body)
+
             SUB_CONFIG -> {
                 body.addView(
                     card().apply {
-                        addView(text("导出 / 导入配置", 16f, bold = true))
+                        addView(text("按项导出 / 导入", 16f, bold = true))
                         addView(
                             text(
-                                "导出的是整份配置（模板、会话文案、宏、自定义函数、快照、今日已发记录）。" +
-                                    "导入会整份覆盖当前配置，覆盖前会再确认一次。",
+                                "都能逐项勾选：模板、会话文案、宏、自定义函数，" +
+                                    "外加整类的会话快照与今日已发记录。导入是合并，没勾的部分不动。",
                                 12f,
                                 COLOR_DIM,
                             ),
                         )
-                        addView(
-                            actionRow {
-                                addView(iconButton(UiKit.Icons.EXPORT, "导出到文件", primary = true) { exportConfig() })
-                                addView(iconButton(UiKit.Icons.IMPORT, "从文件导入") { importConfig() })
-                                addView(iconButton(UiKit.Icons.COPY, "复制") { copyConfig() })
-                            },
-                        )
+                    },
+                )
+                body.addView(
+                    menuRow(UiKit.Icons.DOWNLOAD, "导出配置", "挑要带走的模板 / 宏 / 函数") {
+                        exportSelection = TransferSelection()
+                        exportExcluded = emptySet()
+                        transferChecks.clear()
+                        openSubPage(SUB_EXPORT)
+                    },
+                )
+                body.addView(
+                    menuRow(UiKit.Icons.IMPORT, "导入配置", "选文件，再挑要合并进来的条目") {
+                        importSource = null
+                        transferChecks.clear()
+                        openSubPage(SUB_IMPORT)
                     },
                 )
                 body.addView(
@@ -450,28 +602,42 @@ class SparkSettingsActivity : Activity() {
                         addView(text("每次刷新会话都会重扫；总开关关闭时只扫描不发送。", 12f, COLOR_DIM))
                     },
                 )
+                body.addView(sectionTitle("署名与来源（点一下可跳转）"))
                 body.addView(
-                    card().apply {
-                        addView(text("署名与来源", 14f, bold = true))
-                        addView(
-                            text(
-                                "· yfishyon/doumcp（原仓库）—— 抖音逆向与注入能力\n" +
-                                    "  github.com/yfishyon/doumcp\n" +
-                                    "· WorldMargin —— 模板 / 宏 / 函数 这套思路\n" +
-                                    "· DeepSeek 油猴脚本 迁移至安卓",
-                                13f,
-                                COLOR_DIM,
-                            ),
-                        )
-                        addView(
-                            text(
-                                "本模块 fork 自 doumcp（Apache-2.0 许可），只保留「续火花」功能；" +
-                                    "界面、脚本引擎、模板与宏体系为重写。",
-                                12f,
-                                COLOR_DIM,
-                            ),
-                        )
-                    },
+                    linkRow(
+                        title = "原仓库 · yfishyon/doumcp",
+                        url = "https://github.com/yfishyon/doumcp",
+                        desc = "抖音逆向与注入能力的基础（Apache-2.0）",
+                    ),
+                )
+                body.addView(
+                    linkRow(
+                        title = "重写版 · WorldMargin/SparkFlame",
+                        url = "https://gitee.com/WorldMargin/SparkFlame",
+                        desc = "本模块：模板 / 宏 / 函数 + Monaco 编辑器",
+                    ),
+                )
+                body.addView(
+                    linkRow(
+                        title = "WorldMargin",
+                        url = "https://gitee.com/WorldMargin",
+                        desc = "模板 / 宏 / 函数 这套思路，以及 DouYinSpark 油猴脚本原作",
+                    ),
+                )
+                body.addView(
+                    linkRow(
+                        title = "DeepSeek",
+                        url = "https://www.deepseek.com",
+                        desc = "把 DouYinSpark 油猴脚本的完整逻辑迁移至安卓",
+                    ),
+                )
+                body.addView(
+                    text(
+                        "本模块 fork 自 doumcp（Apache-2.0 许可），只保留「续火花」功能；" +
+                            "界面、脚本引擎、模板与宏体系为重写。",
+                        12f,
+                        COLOR_DIM,
+                    ).apply { setPadding(dp(2), dp(8), 0, 0) },
                 )
             }
         }
@@ -497,13 +663,17 @@ class SparkSettingsActivity : Activity() {
 
     /** 「续火花」页：内层「已选目标 / 未选目标」两页 + 勾选后的批量移动条。 */
     private fun buildSparkPage(config: SparkConfig): View {
-        val conversations = config.snapshots.filter { !it.isGroup }
+        // 群聊也进列表，但和单聊分成两张卡片（群聊默认不自动发送，要手动移进已选目标/勾选发送）
+        val conversations = config.snapshots
         val renewal = conversations.filter { config.needsRenewal(it) }
         val idle = conversations.filterNot { config.needsRenewal(it) }
         val page = column().apply { setPadding(dp(16), 0, dp(16), dp(8)) }
         rowChecks.clear()
+        rowViews.clear()
         selectionBar = null
         selectionCount = null
+        sendLabel = null
+        renewalCount = renewal.size
 
         page.addView(
             segmented(listOf("已选目标 ${renewal.size}", "未选目标 ${idle.size}"), sparkPage) { index ->
@@ -520,18 +690,16 @@ class SparkSettingsActivity : Activity() {
         page.addView(
             row().apply {
                 setPadding(0, dp(6), 0, 0)
-                addView(
+                val send =
                     iconButton(
                         UiKit.Icons.MAIL,
-                        if (selected.isNotEmpty()) {
-                            "发送勾选的 ${selected.size} 个"
-                        } else {
-                            "发送已选目标 ${renewal.size} 个"
-                        },
+                        sendText(),
                         primary = true,
                         compact = true,
-                    ) { confirmManualSend(manualTargets) },
-                )
+                    ) { confirmManualSend(manualTargets) }
+                // iconButton 里图标在前、文字在后，取文字视图留着实时改
+                sendLabel = (send as? android.view.ViewGroup)?.getChildAt(1) as? TextView
+                addView(send)
                 addView(spacer())
             },
         )
@@ -558,7 +726,35 @@ class SparkSettingsActivity : Activity() {
                     ).apply { setPadding(0, dp(12), 0, 0) },
                 )
             } else {
-                current.forEach { list.addView(buildConversationRow(config, it)) }
+                // 分组卡片：单聊一组、群聊一组（标题 + 分隔线 + 条目）；下面挂搜索，按关键字过滤
+                val singles = current.filterNot { it.isGroup }
+                val groups = current.filter { it.isGroup }
+                val filterables = mutableListOf<Pair<View, List<Pair<View, String>>>>()
+                val singleRows = singles.map { it to buildConversationRow(config, it) }
+                val groupRows = groups.map { it to buildConversationRow(config, it) }
+                val singlesCard =
+                    sectionCard(
+                        title = "单聊",
+                        count = singles.size,
+                        collapsed = singlesCollapsed,
+                        onToggle = { singlesCollapsed = it },
+                        items = singleRows.map { it.second },
+                    )
+                val groupsCard =
+                    sectionCard(
+                        title = "群聊",
+                        count = groups.size,
+                        hint = "群聊默认不自动发送：勾选后点「发送勾选」或把它移进已选目标才会发",
+                        collapsed = groupsCollapsed,
+                        onToggle = { groupsCollapsed = it },
+                        items = groupRows.map { it.second },
+                    )
+                filterables += singlesCard to singleRows.map { (snap, view) -> view to searchTextOf(snap) }
+                filterables += groupsCard to groupRows.map { (snap, view) -> view to searchTextOf(snap) }
+                list.addView(searchRow("搜索昵称 / 备注", sparkQuery) { applyQuery(it, filterables) })
+                if (sparkQuery.isNotEmpty()) filterGroups(sparkQuery, filterables)
+                list.addView(singlesCard)
+                list.addView(groupsCard)
             }
             list.addView(
                 text("点会话行编辑该会话的文案；勾选后用下方按钮批量移动归属。", 12f, COLOR_DIM).apply {
@@ -570,6 +766,38 @@ class SparkSettingsActivity : Activity() {
         page.addView(buildSelectionBar())
         applySelection()
         return page
+    }
+
+    /**
+     * 点模板标题：展开时直接重建页面，新卡片进场做一次高度动画；
+     * 收起先把这张卡片的高度收掉再重建，避免整页「啪」地跳一下。
+     */
+    private fun toggleTemplateFold(id: String) {
+        val opening = expandedTemplateId != id
+        // 手风琴：先把之前展开的那张收起来，再展开 / 收起这一张，全程只动高度
+        expandedTemplateId?.takeIf { it != id }?.let { prev ->
+            templateFolds[prev]?.let { (extra, glyph) -> animateFold(extra, false, glyph) }
+        }
+        templateFolds[id]?.let { (extra, glyph) -> animateFold(extra, opening, glyph) }
+        expandedTemplateId = if (opening) id else null
+    }
+
+    /** 会话的搜索文本：昵称 + 备注 + 来源模板名，够用来找人了。 */
+    private fun searchTextOf(snapshot: ConversationSnapshot): String =
+        buildString {
+            append(snapshot.displayName).append(' ')
+            append(snapshot.remark).append(' ')
+            append(snapshot.name)
+        }
+
+    /** 应用搜索关键字：条目按关键字显隐，整组都不匹配就把那张卡片藏掉；顺手记住关键字。 */
+    private fun applyQuery(
+        query: String,
+        groups: List<Pair<View, List<Pair<View, String>>>>,
+        remember: Boolean = true,
+    ) {
+        if (remember) sparkQuery = query
+        filterGroups(query, groups)
     }
 
     /** 多选后的操作条（没有勾选时隐藏）：上行计数 + 取消，下行两个批量移动按钮。 */
@@ -600,18 +828,12 @@ class SparkSettingsActivity : Activity() {
             addView(
                 row().apply {
                     addView(
-                        button("→ 已选目标").apply {
-                            layoutParams =
-                                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            setOnClickListener { moveSelection(true) }
-                        },
+                        iconButton(UiKit.Icons.ADD, "移入已选目标", primary = true, compact = true) { moveSelection(true) }
+                            .apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) },
                     )
                     addView(
-                        button("→ 未选目标").apply {
-                            layoutParams =
-                                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            setOnClickListener { moveSelection(false) }
-                        },
+                        iconButton(UiKit.Icons.REMOVE, "移出到未选目标", compact = true) { moveSelection(false) }
+                            .apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) },
                     )
                 },
             )
@@ -625,9 +847,19 @@ class SparkSettingsActivity : Activity() {
             val checked = id in selected
             if (box.isChecked != checked) box.isChecked = checked
         }
+        rowViews.forEach { (id, view) -> view.setBackgroundColor(if (id in selected) COLOR_SELECTED else 0x00000000) }
         selectionCount?.text = "已选 ${selected.size} 个"
         selectionBar?.visibility = if (selected.isEmpty()) View.GONE else View.VISIBLE
+        sendLabel?.text = sendText()
     }
+
+    /** 顶部发送按钮的文案：有勾选按勾选数，没有就按「已选目标」数。 */
+    private fun sendText(): String =
+        if (selected.isNotEmpty()) {
+            "发送给选中的 ${selected.size} 个"
+        } else {
+            "发送全部 $renewalCount 个"
+        }
 
     /** 火花状态文案：今天已互动 / 今天还没互动 / 待重燃（断了在恢复）/ 可点亮 / 没有火苗。 */
     private fun sparkLabel(snapshot: ConversationSnapshot): String =
@@ -641,6 +873,7 @@ class SparkSettingsActivity : Activity() {
             else -> "火花 ${snapshot.days} 天"
         }
 
+    /** 会话条目（放进分组卡片里，自身不画背景；条目之间的分隔线由分组卡片负责）。 */
     private fun buildConversationRow(
         config: SparkConfig,
         snapshot: ConversationSnapshot,
@@ -666,52 +899,58 @@ class SparkSettingsActivity : Activity() {
                 snapshot.hasSpark -> COLOR_ACCENT
                 else -> COLOR_DIM
             }
-        return card().apply {
+        return flatRow().apply {
+            val box =
+                CheckBox(this@SparkSettingsActivity).apply {
+                    isChecked = id in selected
+                    setOnCheckedChangeListener { _, checked ->
+                        if (checked) selected += id else selected -= id
+                        applySelection()
+                    }
+                }
+            rowChecks[id] = box
+            addView(box)
+            val avatar =
+                ImageView(this@SparkSettingsActivity).apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(12) }
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                }
+            AvatarLoader.load(this@SparkSettingsActivity, avatar, snapshot.avatar, snapshot.displayName)
+            addView(avatar)
             addView(
-                row().apply {
-                    val box =
-                        CheckBox(this@SparkSettingsActivity).apply {
-                            isChecked = id in selected
-                            setOnCheckedChangeListener { _, checked ->
-                                if (checked) selected += id else selected -= id
-                                applySelection()
-                            }
-                        }
-                    rowChecks[id] = box
-                    addView(box)
-                    val avatar =
-                        ImageView(this@SparkSettingsActivity).apply {
-                            layoutParams =
-                                LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(10) }
-                            scaleType = ImageView.ScaleType.CENTER_CROP
-                        }
-                    AvatarLoader.load(this@SparkSettingsActivity, avatar, snapshot.avatar, snapshot.displayName)
-                    addView(avatar)
+                column().apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     addView(
-                        column().apply {
-                            layoutParams =
-                                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            addView(
-                                row().apply {
-                                    addView(text(snapshot.displayName.ifBlank { "(无名)" }, 16f, bold = true))
-                                    addView(text("　$sparkText", 13f, sparkColor))
-                                    if (marker.isNotEmpty()) addView(text(marker, 12f, COLOR_ACCENT))
-                                },
-                            )
-                            addView(text(sourceText, 13f, COLOR_DIM))
-                            if (template?.modified == true) {
-                                addView(text("已本地修改（父模板同步时不会被覆盖）", 12f, COLOR_WARN))
-                            }
+                        row().apply {
+                            addView(text(snapshot.displayName.ifBlank { "(无名)" }, 15.5f, bold = true))
+                            addView(spacer())
+                            if (marker.isNotEmpty()) addView(text(marker.trim(), 12f, COLOR_ACCENT))
                         },
                     )
+                    addView(text(sparkText, 13f, sparkColor).apply { setPadding(0, dp(2), 0, 0) })
+                    addView(text(sourceText, 12.5f, COLOR_DIM).apply { setPadding(0, dp(2), 0, 0) })
+                    if (template?.modified == true) {
+                        addView(
+                            text("已本地修改（父模板同步时不会被覆盖）", 12f, COLOR_WARN)
+                                .apply { setPadding(0, dp(2), 0, 0) },
+                        )
+                    }
                 },
             )
         }.asClickable {
+            // 选择是页面内的临时状态：进会话前清掉，免得回来还留着"发送给选中的 1 个"
+            if (selected.isNotEmpty()) {
+                selected.clear()
+            }
             startActivity(
                 Intent(this@SparkSettingsActivity, ConversationEditActivity::class.java)
                     .putExtra(ConversationEditActivity.EXTRA_CONVERSATION_ID, snapshot.conversationId),
             )
         }.apply {
+            rowViews[id] = this
+            setBackgroundColor(if (id in selected) COLOR_SELECTED else 0x00000000)
             setOnLongClickListener {
                 if (id in selected) selected -= id else selected += id
                 applySelection()
@@ -765,23 +1004,32 @@ class SparkSettingsActivity : Activity() {
      */
     private fun buildTemplatesPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(0), dp(16), dp(16)) }
-
+        templateFolds.clear()
+        val templateFilter = mutableListOf<Pair<View, List<Pair<View, String>>>>()
+        val contentStart = body.childCount
+        val templateEmpty = text("没有匹配的模板", 13f, COLOR_DIM).apply { visibility = View.GONE }
         body.addView(
-            sectionToggle("内置模板", "${BuiltinTemplates.ALL.size} 个", builtinSectionOpen) {
-                builtinSectionOpen = !builtinSectionOpen
-                render()
+            searchRow("搜索模板名 / 内容", templateQuery) { query ->
+                templateQuery = query
+                // 逐张卡片判定：搜索行不在过滤单元里，所以不会被一起藏掉
+                filterGroups(query, templateFilter)
+                templateEmpty.visibility = if (query.isNotBlank() && templateFilter.none { it.first.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
             },
         )
-        if (builtinSectionOpen) {
+
+        run {
+            val rows = mutableListOf<View>()
             BuiltinTemplates.ALL.forEachIndexed { index, builtin ->
                 val id = SparkConfig.BUILTIN_PREFIX + builtin.id
                 val derived = config.membersOf(id).size
                 val expanded = id == expandedTemplateId
-                body.addView(
-                    card().apply {
+                rows +=
+                    column().apply {
+                        setPadding(0, dp(10), 0, dp(10))
+                        val glyph = icon(if (expanded) UiKit.Icons.FOLD else UiKit.Icons.UNFOLD, 14f, COLOR_DIM).apply { setPadding(0, 0, dp(6), 0) }
                         addView(
                             row().apply {
-                                addView(text(if (expanded) "▾ " else "▸ ", 14f, COLOR_DIM))
+                                addView(glyph)
                                 addView(text(builtin.name, 16f, bold = true))
                                 if (builtin.id == BuiltinTemplates.BLANK.id) addView(text("　默认", 12f, COLOR_DIM))
                                 addView(spacer())
@@ -792,99 +1040,133 @@ class SparkSettingsActivity : Activity() {
                         if (builtin.body.isNotBlank()) {
                             addView(text(previewBody(config, builtin.body, index), 13f, COLOR_DIM))
                         }
-                        if (expanded) {
-                            buildChildren(config, id, this)
-                            if (builtin.body.isNotBlank()) {
-                                addView(
-                                    row().apply {
-                                        setPadding(0, dp(8), 0, 0)
-                                        addView(button("添加为我的模板", primary = true).apply { setOnClickListener { addBuiltinAsTemplate(builtin) } })
-                                        addView(button("选会话继承").apply { setOnClickListener { pickMembers(id, builtin.name) } })
-                                        addView(button("克隆到会话").apply { setOnClickListener { cloneBodyToConversations(builtin.name, builtin.body) } })
-                                    },
-                                )
+                        val extra =
+                            column().apply {
+                                visibility = if (expanded) View.VISIBLE else View.GONE
+                                buildChildren(config, id, this)
+                                if (builtin.body.isNotBlank()) {
+                                    addView(
+                                        row().apply {
+                                            setPadding(0, dp(8), 0, 0)
+                                            addView(iconButton(UiKit.Icons.NEW_FILE, "添加为我的模板", primary = true, compact = true) { addBuiltinAsTemplate(builtin) })
+                                            addView(iconButton(UiKit.Icons.PERSON_ADD, "选会话继承", compact = true) { pickMembers(id, builtin.name) })
+                                            addView(iconButton(UiKit.Icons.CLONE, "克隆到会话", compact = true) { cloneBodyToConversations(builtin.name, builtin.body) })
+                                        },
+                                    )
+                                }
                             }
-                        }
-                    }.asClickable {
-                        expandedTemplateId = if (expanded) null else id
-                        render()
-                    },
-                )
+                        addView(extra)
+                        templateFolds[id] = extra to glyph
+                    }.asClickable { toggleTemplateFold(id) }
             }
+            body.addView(
+                sectionCard(
+                    title = "内置模板",
+                    count = rows.size,
+                    collapsed = !builtinSectionOpen,
+                    onToggle = { builtinSectionOpen = !it },
+                    items = rows,
+                ),
+            )
         }
 
-        body.addView(
-            sectionToggle("自定义模板", "${config.groups.size} 个", customSectionOpen) {
-                customSectionOpen = !customSectionOpen
-                render()
-            },
-        )
-        if (customSectionOpen) {
+        run {
+            val rows = mutableListOf<View>()
             if (config.groups.isEmpty()) {
-                body.addView(text("还没有模板。可以从内置模板「添加为我的模板」，或直接新建。", 14f, COLOR_DIM))
+                rows += text("还没有模板。可以从内置模板「添加为我的模板」，或直接新建。", 14f, COLOR_DIM)
             } else {
                 config.groups.forEachIndexed { index, group ->
                     val derived = config.membersOf(group.id).size
                     val expanded = group.id == expandedTemplateId
-                    body.addView(
-                        card().apply {
+                    rows +=
+                        column().apply {
+                            setPadding(0, dp(10), 0, dp(10))
+                            val glyph = icon(if (expanded) UiKit.Icons.FOLD else UiKit.Icons.UNFOLD, 14f, COLOR_DIM).apply { setPadding(0, 0, dp(6), 0) }
                             addView(
                                 row().apply {
-                                    addView(text(if (expanded) "▾ " else "▸ ", 14f, COLOR_DIM))
+                                    addView(glyph)
                                     addView(text(group.name.ifBlank { "(未命名)" }, 16f, bold = true))
                                     addView(spacer())
                                     if (derived > 0) addView(text("派生 $derived", 12f, COLOR_ACCENT))
                                 },
                             )
                             addView(text(previewGroup(config, group, index), 13f, COLOR_DIM))
-                            if (expanded) {
-                                buildChildren(config, group.id, this)
-                                addView(
-                                    row().apply {
-                                        setPadding(0, dp(8), 0, 0)
-                                        addView(button("编辑模板", primary = true).apply { setOnClickListener { openTemplateEditor(group.id) } })
-                                        addView(button("选会话继承").apply { setOnClickListener { pickMembers(group.id, group.name) } })
-                                        addView(button("克隆到会话").apply { setOnClickListener { cloneBodyToConversations(group.name, group.body) } })
-                                    },
-                                )
-                            }
-                        }.asClickable {
-                            expandedTemplateId = if (expanded) null else group.id
-                            render()
-                        },
-                    )
+                            val extra =
+                                column().apply {
+                                    visibility = if (expanded) View.VISIBLE else View.GONE
+                                    buildChildren(config, group.id, this)
+                                    addView(
+                                        row().apply {
+                                            setPadding(0, dp(8), 0, 0)
+                                            addView(iconButton(UiKit.Icons.EDIT, "编辑模板", primary = true, compact = true) { openTemplateEditor(group.id) })
+                                            addView(iconButton(UiKit.Icons.PERSON_ADD, "选会话继承", compact = true) { pickMembers(group.id, group.name) })
+                                            addView(iconButton(UiKit.Icons.CLONE, "克隆到会话", compact = true) { cloneBodyToConversations(group.name, group.body) })
+                                        },
+                                    )
+                                }
+                            addView(extra)
+                            templateFolds[group.id] = extra to glyph
+                        }.asClickable { toggleTemplateFold(group.id) }
                 }
             }
             body.addView(
-                row().apply {
-                    setPadding(0, dp(12), 0, 0)
-                    addView(button("＋ 新增模板", primary = true).apply { setOnClickListener { openTemplateEditor(null) } })
+                sectionCard(
+                    title = "自定义模板",
+                    count = config.groups.size,
+                    collapsed = !customSectionOpen,
+                    onToggle = { customSectionOpen = !it },
+                    items = rows,
+                ),
+            )
+        }
+        // 搜索过滤单元要在返回前登记，否则整页搜索不生效
+        val templateCards = (contentStart until body.childCount).map { body.getChildAt(it) }
+        // 每张卡片各自成组（不要用 body 当组，否则会把搜索行一起藏掉）
+        templateCards.forEach { card -> templateFilter += card to listOf(card to card.textContent()) }
+        if (templateQuery.isNotEmpty()) filterGroups(templateQuery, templateFilter)
+        return column().apply {
+            addView(
+                scroll().apply { addView(body) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
+            )
+            addView(templateEmpty)
+            addView(
+                bottomBar {
+                    addView(iconButton(UiKit.Icons.ADD, "新增模板", primary = true, compact = true) { openTemplateEditor(null) })
                 },
             )
         }
-        return column().apply { addView(scroll().apply { addView(body) }) }
     }
 
-    /** 可折叠的段标题。 */
+    /** 可折叠的段标题（圆角卡片样式，与列表页的分组卡片一致）。 */
     private fun sectionToggle(
         title: String,
         count: String,
         open: Boolean,
         onToggle: () -> Unit,
     ): View =
-        row().apply {
-            setPadding(0, dp(16), 0, dp(4))
+        card().apply {
             isClickable = true
             setOnClickListener { onToggle() }
-            addView(text(if (open) "▾ " else "▸ ", 13f, COLOR_DIM, bold = true))
-            addView(text(title, 14f, COLOR_TEXT, bold = true))
-            addView(spacer())
-            addView(text(count, 13f, COLOR_DIM))
+            addView(
+                row().apply {
+                    addView(text(title, 15f, COLOR_TEXT, bold = true))
+                    addView(spacer())
+                    addView(text(count, 13f, COLOR_DIM).apply { setPadding(0, 0, dp(8), 0) })
+                    addView(icon(if (open) UiKit.Icons.FOLD else UiKit.Icons.UNFOLD, 14f, COLOR_DIM))
+                },
+            )
         }
 
     /**
      * 展开后列出的派生模板（继承自该模板的会话），多层派生按缩进铺开：
      * `A → B → C` 时在 A 下面先列 B，再缩进列 C。
+     */
+    /**
+     * 展开后列出的派生模板（继承自该模板的会话/子模板），多层派生按缩进铺开：
+     * `A → B → C` 时在 A 下面先列 B，再缩进列 C。
+     *
+     * 每一行都可以点：点会话就进它的文案编辑页，点子模板就进模板编辑页。
      */
     private fun buildChildren(
         config: SparkConfig,
@@ -898,18 +1180,55 @@ class SparkSettingsActivity : Activity() {
             return
         }
         members.forEach { member ->
+            val id = member.conversationId
+            val isTemplate = config.groups.any { it.id == id }
             body.addView(
-                row().apply {
-                    setPadding(dp(depth * 14), dp(6), 0, 0)
-                    addView(text("└ " + config.conversationLabel(member.conversationId), 14f, COLOR_TEXT))
-                    when {
-                        member.modified -> addView(text("　已本地修改", 12f, COLOR_WARN))
-                        member.inheritFrom == null -> addView(text("　内容固定", 12f, COLOR_DIM))
-                    }
+                flatRow().apply {
+                    setPadding(dp(depth * 16), dp(10), 0, dp(10))
+                    addView(icon(UiKit.Icons.SWAP, 13f, COLOR_DIM).apply { setPadding(0, 0, dp(8), 0) })
+                    addView(
+                        column().apply {
+                            layoutParams =
+                                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                            addView(
+                                text(
+                                    if (isTemplate) "模板：" + (config.group(id)?.name ?: "(已删除)")
+                                    else config.conversationLabel(id),
+                                    14f,
+                                    COLOR_TEXT,
+                                ),
+                            )
+                            when {
+                                member.modified -> addView(text("已本地修改（未跟随父模板）", 12f, COLOR_WARN))
+                                member.inheritFrom == null -> addView(text("内容固定", 12f, COLOR_DIM))
+                                else -> addView(text("跟随父模板", 12f, COLOR_DIM))
+                            }
+                        },
+                    )
+                    addView(icon(UiKit.Icons.CHEVRON_RIGHT, 13f, COLOR_DIM))
+                    isClickable = true
+                    setOnClickListener { openTemplateOrConversation(id, isTemplate) }
                 },
             )
-            buildChildren(config, member.conversationId, body, depth + 1)
+            if (isTemplate) buildChildren(config, id, body, depth + 1)
         }
+    }
+
+    /** 点派生项时跳到对应编辑页：子模板 → 模板编辑页，会话 → 会话文案编辑页。 */
+    private fun openTemplateOrConversation(
+        id: String,
+        isTemplate: Boolean,
+    ) {
+        val intent =
+            if (isTemplate) {
+                Intent(this, TemplateEditActivity::class.java)
+                    .putExtra(TemplateEditActivity.EXTRA_GROUP_ID, id)
+            } else {
+                Intent(this, ConversationEditActivity::class.java)
+                    .putExtra(ConversationEditActivity.EXTRA_CONVERSATION_ID, id)
+            }
+        runCatching { startActivity(intent) }
+            .onFailure { Toast.makeText(this, "打不开：目标可能已被删除", Toast.LENGTH_SHORT).show() }
     }
 
     /** 把内置模板复制成一份可编辑的自定义模板。 */
@@ -1055,7 +1374,7 @@ class SparkSettingsActivity : Activity() {
     // ------------------------------------------------------------ 配置导出导入
 
     /** 导出整份配置（JSON，带缩进便于查看与改）。 */
-    private fun exportConfig() {
+    private fun exportConfig(config: SparkConfig) {
         val pretty = runCatching { org.json.JSONObject(configJson()).toString(2) }.getOrDefault(configJson())
         pendingExport = pretty
         val intent =
@@ -1077,63 +1396,382 @@ class SparkSettingsActivity : Activity() {
             .onFailure { Toast.makeText(this, "没有可用的文件管理器", Toast.LENGTH_SHORT).show() }
     }
 
-    private fun copyConfig() {
+    private fun copyConfig(config: SparkConfig = ConfigStore.load(this)) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 配置", configJson()))
+        clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 配置", configJson(config)))
         Toast.makeText(this, "配置 JSON 已复制", Toast.LENGTH_SHORT).show()
     }
 
-    private fun configJson(): String = ConfigCodec.encode(ConfigStore.load(this))
+    private fun configJson(config: SparkConfig = ConfigStore.load(this)): String = ConfigCodec.encode(config)
 
     private fun exportFileName(): String =
         "星火燎原-配置-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date()) + ".json"
 
-    /** 读取导入的文件并整份覆盖（先确认，再校验 JSON，最后落盘）。 */
-    private fun applyImportedConfig(uri: android.net.Uri) {
-        val text =
+    /** 读取导入的文件，交给「导入配置」页去逐项勾选（不再整份覆盖）。 */
+    private fun loadImportSource(uri: android.net.Uri) {
+        val raw =
             runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }
                 .getOrNull()
-        if (text.isNullOrBlank()) {
+        if (raw.isNullOrBlank()) {
             Toast.makeText(this, "读不到文件内容", Toast.LENGTH_SHORT).show()
             return
         }
-        val root = runCatching { org.json.JSONObject(text) }.getOrNull()
+        val root = runCatching { org.json.JSONObject(raw) }.getOrNull()
         if (root == null || !looksLikeSparkConfig(root)) {
             Toast.makeText(this, "这不是星火燎原的配置文件", Toast.LENGTH_LONG).show()
             return
         }
-        val imported = ConfigCodec.decode(text)
-        AlertDialog
-            .Builder(this)
-            .setTitle("用这个配置覆盖当前配置？")
-            .setMessage(
-                "将导入：模板 ${imported.groups.size} 个、会话文案 ${imported.conversations.size} 条、" +
-                    "宏 ${imported.macros.size} 个、自定义函数 ${imported.functions.size} 个、快照 ${imported.snapshots.size} 条。" +
-                    "\n\n当前配置会被整份替换（总开关保持原样：${if (ConfigStore.load(this).enabled) "开" else "关"}）。",
+        val source = ConfigCodec.decode(raw)
+        importSource = source
+        importSelection = source.fullSelection()
+        transferChecks.clear()
+        Toast.makeText(this, "已读取文件，下面挑要导入的内容", Toast.LENGTH_SHORT).show()
+        render()
+    }
+
+    // ------------------------------------------------------------ 按项导出 / 导入
+
+    /** 勾选行：勾选框 + 标题（+ 说明），[key] 形如 `t:模板id`，用于自动勾选后同步界面。 */
+    private fun checkRow(
+        key: String,
+        label: String,
+        desc: String,
+        checked: Boolean,
+        onToggle: (Boolean) -> Unit,
+    ): View =
+        flatRow().apply {
+            val box =
+                CheckBox(this@SparkSettingsActivity).apply {
+                    isChecked = checked
+                    setOnCheckedChangeListener { _, value -> onToggle(value) }
+                }
+            transferChecks[key] = box
+            addView(box)
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(label, 14.5f, COLOR_TEXT))
+                    if (desc.isNotBlank()) addView(text(desc, 12f, COLOR_DIM))
+                },
             )
-            .setPositiveButton("覆盖导入") { _, _ ->
-                val keepEnabled = ConfigStore.load(this).enabled
-                ConfigStore.save(this, imported.copy(enabled = keepEnabled))
-                Toast.makeText(this, "配置已导入", Toast.LENGTH_SHORT).show()
-                render()
-            }.setNegativeButton("取消", null)
-            .show()
+        }
+
+    /** 把界面上所有勾选框同步成 [selection] 的状态（依赖自动勾选后调用）。 */
+    private fun syncTransferChecks(selection: TransferSelection) {
+        transferChecks.forEach { (key, box) ->
+            val parts = key.split(":", limit = 2)
+            if (parts.size != 2) return@forEach
+            val kind =
+                when (parts[0]) {
+                    "t" -> TransferSelection.Kind.TEMPLATE
+                    "c" -> TransferSelection.Kind.CONVERSATION
+                    "m" -> TransferSelection.Kind.MACRO
+                    "f" -> TransferSelection.Kind.FUNCTION
+                    else -> return@forEach
+                }
+            val want = selection.has(kind, parts[1])
+            if (box.isChecked != want) box.isChecked = want
+        }
+    }
+
+    /** 导出页：逐项勾选要带走的内容。 */
+    private fun buildExportPage(
+        config: SparkConfig,
+        body: LinearLayout,
+    ) {
+        body.addView(
+            card().apply {
+                addView(text("导出哪些内容", 16f, bold = true))
+                addView(
+                    text(
+                        "勾了模板会自动带上它的父模板，以及挂在上面的宏；" +
+                            "脚本里用到的 ctx.functions.名字 也会一起带上（按名字文本匹配）。" +
+                            "自动勾上的宏 / 函数可以再手动取消。",
+                        12f,
+                        COLOR_DIM,
+                    ),
+                )
+                addView(switchRow("会话快照", "昵称 / 头像 / 火花天数（换机后不用等抖音重扫）", exportSelection.snapshots) { on ->
+                    exportSelection = exportSelection.copy(snapshots = on)
+                })
+                addView(switchRow("今日已发记录", "避免导入后当天重复发送", exportSelection.sentDays) { on ->
+                    exportSelection = exportSelection.copy(sentDays = on)
+                })
+            },
+        )
+
+        fun toggle(
+            kind: TransferSelection.Kind,
+            id: String,
+            checked: Boolean,
+        ) {
+            val key =
+                when (kind) {
+                    TransferSelection.Kind.TEMPLATE -> "t:$id"
+                    TransferSelection.Kind.CONVERSATION -> "c:$id"
+                    TransferSelection.Kind.MACRO -> "m:$id"
+                    TransferSelection.Kind.FUNCTION -> "f:$id"
+                }
+            exportSelection = exportSelection.toggle(kind, id, checked)
+            exportExcluded = if (checked) exportExcluded - key else exportExcluded + key
+            if (checked) exportSelection = config.withDependencies(exportSelection, kind, id, exportExcluded)
+            syncTransferChecks(exportSelection)
+        }
+
+        if (config.groups.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "模板",
+                    count = config.groups.size,
+                    items =
+                        config.groups.map { group ->
+                            checkRow(
+                                "t:${group.id}",
+                                group.name.ifBlank { "(未命名模板)" },
+                                "模板正文 " + group.body.length + " 字",
+                                group.id in exportSelection.templates,
+                            ) { checked -> toggle(TransferSelection.Kind.TEMPLATE, group.id, checked) }
+                        },
+                ),
+            )
+        }
+        if (config.conversations.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "会话文案",
+                    count = config.conversations.size,
+                    items =
+                        config.conversations.map { item ->
+                            checkRow(
+                                "c:${item.conversationId}",
+                                config.conversationLabel(item.conversationId),
+                                "来源：" + (config.group(item.inheritFrom)?.name ?: "自定义 / 空白"),
+                                item.conversationId in exportSelection.conversations,
+                            ) { checked -> toggle(TransferSelection.Kind.CONVERSATION, item.conversationId, checked) }
+                        },
+                ),
+            )
+        }
+        if (config.macros.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "宏",
+                    count = config.macros.size,
+                    hint = "勾了模板 / 会话会自动勾上挂在它上面的宏",
+                    items =
+                        config.macros.map { macro ->
+                            checkRow(
+                                "m:${macro.id}",
+                                macro.name.ifBlank { "(未命名宏)" },
+                                "挂在 " + macro.appliesTo.size + " 个目标上",
+                                macro.id in exportSelection.macros,
+                            ) { checked -> toggle(TransferSelection.Kind.MACRO, macro.id, checked) }
+                        },
+                ),
+            )
+        }
+        if (config.functions.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "自定义函数",
+                    count = config.functions.size,
+                    hint = "脚本里出现 ctx.functions.<名字> 的会自动勾上",
+                    items =
+                        config.functions.map { function ->
+                            checkRow(
+                                "f:${function.id}",
+                                function.name,
+                                if (function.desc.isBlank()) function.params else function.desc,
+                                function.id in exportSelection.functions,
+                            ) { checked -> toggle(TransferSelection.Kind.FUNCTION, function.id, checked) }
+                        },
+                ),
+            )
+        }
+
+        body.addView(
+            actionRow {
+                addView(
+                    iconButton(UiKit.Icons.DOWNLOAD, "导出到文件", primary = true, compact = true) {
+                        if (exportSelection.isEmpty) {
+                            Toast.makeText(this@SparkSettingsActivity, "先勾选要导出的内容", Toast.LENGTH_SHORT).show()
+                        } else {
+                            exportConfig(config.subsetOf(exportSelection))
+                        }
+                    },
+                )
+                addView(
+                    iconButton(UiKit.Icons.COPY, "复制 JSON", compact = true) {
+                        if (exportSelection.isEmpty) {
+                            Toast.makeText(this@SparkSettingsActivity, "先勾选要导出的内容", Toast.LENGTH_SHORT).show()
+                        } else {
+                            copyConfig(config.subsetOf(exportSelection))
+                        }
+                    },
+                )
+            },
+        )
+    }
+
+    /** 导入页：先选文件，再逐项勾选要合并进来的内容。 */
+    private fun buildImportPage(
+        config: SparkConfig,
+        body: LinearLayout,
+    ) {
+        body.addView(
+            card().apply {
+                addView(text("导入配置", 16f, bold = true))
+                addView(
+                    text(
+                        "选一个导出的 json，再挑要合并进来的条目。导入是合并：" +
+                            "同名条目覆盖，没勾的部分保持原样（总开关也不会被改）。",
+                        12f,
+                        COLOR_DIM,
+                    ),
+                )
+                addView(
+                    actionRow {
+                        addView(
+                            iconButton(UiKit.Icons.IMPORT, "选择文件", primary = true, compact = true) { importConfig() },
+                        )
+                    },
+                )
+            },
+        )
+
+        val source = importSource
+        if (source == null) {
+            body.addView(text("还没有选择文件。", 13f, COLOR_DIM))
+            return
+        }
+
+        body.addView(
+            card().apply {
+                addView(
+                    text(
+                        "文件里共 " + source.groups.size + " 个模板 / " + source.conversations.size +
+                            " 条会话文案 / " + source.macros.size + " 个宏 / " + source.functions.size +
+                            " 个函数 / " + source.snapshots.size + " 条快照。",
+                        12f,
+                        COLOR_DIM,
+                    ),
+                )
+                addView(switchRow("会话快照", "覆盖同名会话的快照", importSelection.snapshots) { on ->
+                    importSelection = importSelection.copy(snapshots = on)
+                })
+                addView(switchRow("今日已发记录", "合并进当前记录", importSelection.sentDays) { on ->
+                    importSelection = importSelection.copy(sentDays = on)
+                })
+            },
+        )
+
+        fun toggle(
+            kind: TransferSelection.Kind,
+            id: String,
+            checked: Boolean,
+        ) {
+            importSelection = importSelection.toggle(kind, id, checked)
+        }
+
+        if (source.groups.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "模板",
+                    count = source.groups.size,
+                    items =
+                        source.groups.map { group ->
+                            checkRow(
+                                "t:${group.id}",
+                                group.name.ifBlank { "(未命名模板)" },
+                                "文件里的模板",
+                                group.id in importSelection.templates,
+                            ) { checked -> toggle(TransferSelection.Kind.TEMPLATE, group.id, checked) }
+                        },
+                ),
+            )
+        }
+        if (source.conversations.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "会话文案",
+                    count = source.conversations.size,
+                    items =
+                        source.conversations.map { item ->
+                            checkRow(
+                                "c:${item.conversationId}",
+                                config.conversationLabel(item.conversationId),
+                                "文件里的会话文案",
+                                item.conversationId in importSelection.conversations,
+                            ) { checked -> toggle(TransferSelection.Kind.CONVERSATION, item.conversationId, checked) }
+                        },
+                ),
+            )
+        }
+        if (source.macros.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "宏",
+                    count = source.macros.size,
+                    items =
+                        source.macros.map { macro ->
+                            checkRow(
+                                "m:${macro.id}",
+                                macro.name.ifBlank { "(未命名宏)" },
+                                "文件里的宏",
+                                macro.id in importSelection.macros,
+                            ) { checked -> toggle(TransferSelection.Kind.MACRO, macro.id, checked) }
+                        },
+                ),
+            )
+        }
+        if (source.functions.isNotEmpty()) {
+            body.addView(
+                sectionCard(
+                    title = "自定义函数",
+                    count = source.functions.size,
+                    items =
+                        source.functions.map { function ->
+                            checkRow(
+                                "f:${function.id}",
+                                function.name,
+                                function.desc,
+                                function.id in importSelection.functions,
+                            ) { checked -> toggle(TransferSelection.Kind.FUNCTION, function.id, checked) }
+                        },
+                ),
+            )
+        }
+
+        body.addView(
+            actionRow {
+                addView(
+                    iconButton(UiKit.Icons.CHECK, "导入所选", primary = true, compact = true) {
+                        if (importSelection.isEmpty) {
+                            Toast.makeText(this@SparkSettingsActivity, "先勾选要导入的内容", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val merged = ConfigStore.load(this@SparkSettingsActivity).mergeFrom(source, importSelection)
+                            ConfigStore.save(this@SparkSettingsActivity, merged)
+                            Toast.makeText(
+                                this@SparkSettingsActivity,
+                                "已导入：模板 " + importSelection.templates.size + " / 文案 " +
+                                    importSelection.conversations.size + " / 宏 " + importSelection.macros.size +
+                                    " / 函数 " + importSelection.functions.size,
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            importSource = null
+                            transferChecks.clear()
+                            render()
+                        }
+                    },
+                )
+            },
+        )
     }
 
     /** 粗校验：至少带一个本模块的字段，避免把随便一个 json 导进来清空配置。 */
     private fun looksLikeSparkConfig(root: org.json.JSONObject): Boolean =
         listOf("groups", "conversations", "snapshots", "macros", "functions", "sentDays", "enabled")
             .any { root.has(it) }
-
-    /** 复制整份使用文档：直接贴给 AI 就能照着 API 生成脚本。 */
-    private fun copyManual() {
-        val manual =
-            runCatching { assets.open(DocsActivity.MANUAL_ASSET).bufferedReader().use { it.readText() } }
-                .getOrElse { return }
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 使用文档", manual))
-        Toast.makeText(this, "已复制全文，可以贴给 AI 了", Toast.LENGTH_SHORT).show()
-    }
 
     /** 预览一段模板文案（自动带上自定义函数注入）。[sampleIndex] 让每行轮换样例，免得整页都是同一个人。 */
     private fun previewBody(
@@ -1175,13 +1813,39 @@ class SparkSettingsActivity : Activity() {
                 }
             },
         )
+        val macroFilter = mutableListOf<Pair<View, List<Pair<View, String>>>>()
+        val macroEmpty = text("没有匹配的宏 / 函数", 13f, COLOR_DIM).apply { visibility = View.GONE }
+        page.addView(
+            searchRow("搜索宏 / 函数名与内容", macroQuery) { query ->
+                macroQuery = query
+                filterGroups(query, macroFilter)
+                macroEmpty.visibility = if (query.isNotBlank() && macroFilter.none { it.first.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
+            },
+        )
         val body = column().apply { setPadding(0, dp(8), 0, dp(16)) }
         if (functionsPage == PAGE_MACROS) {
             buildMacrosSection(config, body)
         } else {
             buildFunctionsSection(config, body)
         }
-        page.addView(scroll().apply { addView(body) })
+        val macroCards = (0 until body.childCount).map { body.getChildAt(it) }
+        // 每张卡片各自成组，避免把搜索行一起藏掉
+        macroCards.forEach { card -> macroFilter += card to listOf(card to card.textContent()) }
+        if (macroQuery.isNotEmpty()) filterGroups(macroQuery, macroFilter)
+        page.addView(
+            scroll().apply { addView(body) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+        page.addView(macroEmpty)
+        page.addView(
+            bottomBar {
+                if (functionsPage == PAGE_MACROS) {
+                    addView(iconButton(UiKit.Icons.METHOD, "新增宏", primary = true, compact = true) { openMacroEditor(null) })
+                } else {
+                    addView(iconButton(UiKit.Icons.NAMESPACE, "新增函数", primary = true, compact = true) { openFunctionEditor(null) })
+                }
+            },
+        )
         return page
     }
 
@@ -1210,12 +1874,6 @@ class SparkSettingsActivity : Activity() {
                 )
             }
         }
-        body.addView(
-            row().apply {
-                setPadding(0, dp(12), 0, 0)
-                addView(button("＋ 新增宏", primary = true).apply { setOnClickListener { openMacroEditor(null) } })
-            },
-        )
     }
 
     /** 自定义函数列表 + 新增（注入成 ctx.functions.<名字>）。 */
@@ -1236,12 +1894,6 @@ class SparkSettingsActivity : Activity() {
                 )
             }
         }
-        body.addView(
-            row().apply {
-                setPadding(0, dp(12), 0, 0)
-                addView(button("＋ 新增函数", primary = true).apply { setOnClickListener { openFunctionEditor(null) } })
-            },
-        )
     }
 
     /** 宏的生效目标名字（通用模板名 / 会话显示名）。 */
@@ -1290,13 +1942,14 @@ class SparkSettingsActivity : Activity() {
             row().apply {
                 setPadding(0, dp(12), 0, 0)
                 addView(
-                    iconButton(UiKit.Icons.REFRESH, "刷新会话", primary = true) {
-                        sendBroadcast(Intent(ConfigContract.ACTION_REFRESH_SNAPSHOT))
-                        Toast.makeText(this@SparkSettingsActivity, "已请求刷新，请稍候…", Toast.LENGTH_SHORT).show()
+                    iconButton(UiKit.Icons.REFRESH, "刷新会话", primary = true, compact = true) {
+                        withHostOnline {
+                            sendBroadcast(Intent(ConfigContract.ACTION_REFRESH_SNAPSHOT))
+                            Toast.makeText(this@SparkSettingsActivity, "已请求刷新，请稍候…", Toast.LENGTH_SHORT).show()
+                        }
                     },
                 )
-                addView(iconButton(UiKit.Icons.BOOK, "使用文档") { openDocs() })
-                addView(iconButton(UiKit.Icons.COPY, "复制全文") { copyManual() })
+                addView(iconButton(UiKit.Icons.BOOK, "使用文档", compact = true) { openDocs() })
             },
         )
 
@@ -1322,7 +1975,7 @@ class SparkSettingsActivity : Activity() {
             },
         )
         body.addView(
-            menuRow(UiKit.Icons.EXPORT, "配置", "导出 / 导入整份配置（换机、备份用）") {
+            menuRow(UiKit.Icons.DOWNLOAD, "配置", "导出 / 导入整份配置（换机、备份用）") {
                 openSubPage(SUB_CONFIG)
             },
         )
@@ -1400,6 +2053,8 @@ class SparkSettingsActivity : Activity() {
                 SUB_ASSIGN to "手动归属",
                 SUB_EDITOR to "编辑器",
                 SUB_CONFIG to "配置",
+                SUB_EXPORT to "导出配置",
+                SUB_IMPORT to "导入配置",
                 SUB_HOST to "宿主状态",
                 SUB_ABOUT to "关于",
             )
@@ -1420,11 +2075,24 @@ class SparkSettingsActivity : Activity() {
         const val SUB_ASSIGN = "assign"
         const val SUB_EDITOR = "editor"
         const val SUB_CONFIG = "config"
+        const val SUB_EXPORT = "export"
+        const val SUB_IMPORT = "import"
         const val SUB_HOST = "host"
         const val SUB_ABOUT = "about"
 
         /** 手动发送等回执的超时（抖音没运行时不至于一直等）。 */
         const val SEND_TIMEOUT_MS = 12_000L
+
+        /** 宿主存活时间戳的有效期：超过就认为抖音已经不在运行了。 */
+        const val HOST_FRESH_MS = 90_000L
+
+        /** 探活广播等回执的时间。 */
+        const val HOST_PING_MS = 1_500L
+
+        /** 抖音冷启动后等它把模块装载好的时间。 */
+        const val HOST_BOOT_WAIT_MS = 4_000L
+
+        const val DOUYIN_PACKAGE = "com.ss.android.ugc.aweme"
 
         /** 配置导出 / 导入的文件选择请求码。 */
         const val REQUEST_EXPORT_CONFIG = 0x61

@@ -2,6 +2,7 @@ package com.worldmargin.autospark.features.autospark.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -10,34 +11,46 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import com.worldmargin.autospark.features.autospark.model.SparkConfig
 import com.worldmargin.autospark.features.autospark.model.UserFunction
+import com.worldmargin.autospark.features.autospark.script.SparkFunctionSource
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_DIM
+import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_WARN
 import com.worldmargin.autospark.features.autospark.ui.UiKit.actionRow
-import com.worldmargin.autospark.features.autospark.ui.UiKit.button
 import com.worldmargin.autospark.features.autospark.ui.UiKit.column
 import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
+import com.worldmargin.autospark.features.autospark.ui.UiKit.pasteButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
 import java.util.UUID
 
 /**
- * 自定义函数编辑（名称 / 形参 / 说明 / 函数体）。
+ * 自定义函数编辑。
  *
- * 函数体用与模板、宏一致的 Monaco 编辑器（可在设置里切回原生编辑器），
- * 执行前会注入成 `ctx.functions.<名字>` 供脚本调用。
+ * 直接写**完整函数声明**（不再只写函数内部）：
+ *
+ * ```js
+ * function daysTo(date) {
+ *   return Math.ceil((new Date(date) - new Date()) / 86400000);
+ * }
+ * ```
+ *
+ * 保存时由 [SparkFunctionSource] 解析出函数名与形参，挂到 `ctx.functions.<名字>` 供脚本调用；
+ * **只允许一个函数** —— 声明之后再写别的内容会被拒绝。
+ * 早期版本只存了「函数内部」，打开时会自动补成完整声明，可以继续编辑。
  */
 class FunctionEditActivity : Activity() {
     companion object {
         const val EXTRA_FUNCTION_ID = "function_id"
+
+        /** 新建函数时的起步模板，让格式一眼就懂。 */
+        const val DEFAULT_TEMPLATE = "function myFunction(value) {\n  return value;\n}\n"
     }
 
     private var functionId: String? = null
     private var existed = false
-    private lateinit var nameField: EditText
-    private lateinit var paramsField: EditText
     private lateinit var descField: EditText
     private lateinit var editor: SparkEditor
 
@@ -49,22 +62,6 @@ class FunctionEditActivity : Activity() {
         existed = function != null
 
         val root = column().apply { setPadding(dp(16), dp(4), dp(16), dp(4)) }
-        root.addView(text("函数名", 13f, COLOR_DIM))
-        nameField =
-            EditText(this).apply {
-                hint = "例如 daysTo"
-                setText(function?.name ?: "")
-                setSingleLine()
-            }
-        root.addView(nameField)
-        root.addView(text("形参（逗号分隔，可留空）", 13f, COLOR_DIM))
-        paramsField =
-            EditText(this).apply {
-                hint = "例如 date, pattern"
-                setText(function?.params ?: "")
-                setSingleLine()
-            }
-        root.addView(paramsField)
         root.addView(text("说明（可选，会显示在补全提示里）", 13f, COLOR_DIM))
         descField =
             EditText(this).apply {
@@ -73,12 +70,19 @@ class FunctionEditActivity : Activity() {
                 setSingleLine()
             }
         root.addView(descField)
-        root.addView(text("函数体（要返回值就写 return）", 13f, COLOR_DIM))
+        root.addView(text("函数（直接写完整声明，只能有一个函数）", 13f, COLOR_DIM))
+        root.addView(
+            text(
+                "function 名字(形参) { … }　—— 保存后脚本里用 ctx.functions.名字(...) 调用",
+                12f,
+                COLOR_DIM,
+            ),
+        )
         editor =
             SparkEditors
                 .create(this, config)
                 .apply {
-                    setText(function?.body ?: "")
+                    setText(function?.declaration() ?: DEFAULT_TEMPLATE)
                     applyTypes(config)
                 }
         root.addView(
@@ -88,10 +92,11 @@ class FunctionEditActivity : Activity() {
         root.addView(divider())
         root.addView(
             actionRow {
-                addView(iconButton(UiKit.Icons.SEARCH, "补全", compact = true) { editor.showCompletion() })
-                addView(iconButton(UiKit.Icons.EDIT, "格式化", compact = true) { editor.format() })
+                addView(pasteButton(editor))
+                addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
+                addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
-                    addView(iconButton(UiKit.Icons.TRASH, "删除", compact = true) { confirmDelete() })
+                    addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDelete() })
                 }
             },
         )
@@ -116,24 +121,25 @@ class FunctionEditActivity : Activity() {
     private fun saveAction(): View = iconButton(UiKit.Icons.CHECK, "保存", primary = true, compact = true) { save() }
 
     private fun save() {
-        val name = nameField.text.toString().trim()
-        if (name.isEmpty()) {
-            Toast.makeText(this, "函数名不能为空", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (!name.matches(Regex("[A-Za-z_$][A-Za-z0-9_$]*"))) {
-            Toast.makeText(this, "函数名只能是字母/数字/下划线，且不能以数字开头", Toast.LENGTH_LONG).show()
+        val result = SparkFunctionSource.parse(editor.text)
+        val parsed = result.parsed
+        if (parsed == null) {
+            AlertDialog
+                .Builder(this)
+                .setTitle("函数写得不对")
+                .setMessage((result.error ?: "解析失败") + "\n\n要写成：\nfunction 名字(形参) {\n  …\n}\n\n而且只能有一个函数。")
+                .setPositiveButton("继续改", null)
+                .show()
             return
         }
         val now = System.currentTimeMillis()
-        val body = editor.text
         ConfigStore.update(this) { config ->
             val next =
                 UserFunction(
                     id = functionId ?: UUID.randomUUID().toString(),
-                    name = name,
-                    params = paramsField.text.toString().trim(),
-                    body = body,
+                    name = parsed.name,
+                    params = parsed.params,
+                    body = parsed.source,
                     desc = descField.text.toString().trim(),
                     updatedAt = now,
                 )
@@ -148,7 +154,7 @@ class FunctionEditActivity : Activity() {
                     },
             )
         }
-        Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "已保存 ctx.functions.${parsed.name}", Toast.LENGTH_SHORT).show()
         finish()
     }
 

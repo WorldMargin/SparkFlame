@@ -3,6 +3,17 @@
 一个 LSPosed 模块：注入抖音进程，**自动给「今天还没互动」的会话续火花**（发一条你自己写的文案）。
 文案是一段 JavaScript，可以用模板、宏和自定义函数组合出来 —— 目标就是「每天自动续，但话说得像真人说的」。
 
+## 下载
+
+- **Release 页（推荐）**：[gitee.com/WorldMargin/SparkFlame/releases](https://gitee.com/WorldMargin/SparkFlame/releases)
+  最新直链：`https://gitee.com/WorldMargin/SparkFlame/releases/download/v1.1.0/app-arm64-v8a-release.apk`
+  （arm64-v8a，约 3.1 MB，**release 构建**：R8 压缩 + 资源裁剪 + release 签名，可直接覆盖安装 debug 包、不丢配置）
+- 自己构建：
+  ```powershell
+  .\build_doumcp.ps1 -Variant release   # R8 优化包（app\build\outputs\apk\release\）
+  .\build_doumcp.ps1                    # debug 包（默认）
+  ```
+
 ## 署名与来源
 
 本模块 fork 自开源项目 **[yfishyon/doumcp](https://github.com/yfishyon/doumcp)**（Apache-2.0 许可），
@@ -11,8 +22,8 @@
 思路上的致谢：
 
 - **yfishyon/doumcp** —— 抖音逆向与注入能力的基础（会话、IM 发送、火花字段等）
-- **WorldMargin** —— 模板 / 宏 / 函数 这套组合思路
-- **DeepSeek 油猴脚本** —— 本项目由该思路迁移至安卓
+- **WorldMargin** —— 模板 / 宏 / 函数 这套组合思路，以及 **DouYinSpark 油猴脚本原作**
+- **DeepSeek** —— 把 DouYinSpark 油猴脚本的完整逻辑迁移至安卓
 
 ## 功能
 

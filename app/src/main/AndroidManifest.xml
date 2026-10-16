@@ -5,9 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:description="@string/doumcp_description"
+        android:description="@string/spark_description"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/doumcp_name">
+        android:label="@string/spark_name">
 
         <!-- 配置跨进程通道：管理界面（模块进程）写，宿主（抖音进程）读 -->
         <provider
@@ -28,7 +28,7 @@
         <activity
             android:name=".features.autospark.ui.SparkSettingsActivity"
             android:exported="true"
-            android:label="@string/doumcp_name"
+            android:label="@string/spark_name"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

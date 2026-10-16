@@ -92,6 +92,20 @@
             getText: function () {
                 return editor.getValue();
             },
+            /**
+             * 在光标处插入文本（「粘贴」按钮用）。
+             *
+             * 长按的原生选择菜单已被宿主关掉，粘贴只能走这里：把剪贴板内容插到当前选区/光标处。
+             */
+            insertText: function (text) {
+                if (!text) {
+                    return;
+                }
+                var selection = editor.getSelection();
+                editor.executeEdits('spark-paste', [{ range: selection, text: text, forceMoveMarkers: true }]);
+                editor.pushUndoStop();
+                editor.focus();
+            },
             setTypes: function (dts) {
                 if (userLib) {
                     userLib.dispose();
@@ -204,6 +218,27 @@
         var pinchStart = null;
         var editorDom = document.getElementById('editor');
 
+        // 触摸事件用捕获阶段：Monaco 自己的手势处理会在冒泡阶段 stopPropagation，
+        // 挂在冒泡上的 listener 收不到 touchmove，滑动就会被误判成点击、弹出键盘。
+        var CAPTURE = { passive: true, capture: true };
+
+        /** 摘掉 Monaco 输入节点的焦点并让宿主收起输入法（滑动时用）。 */
+        function blurEditor() {
+            try {
+                var node = editor.getDomNode && editor.getDomNode();
+                var area = node && node.querySelector('textarea');
+                if (area && document.activeElement === area) {
+                    area.blur();
+                }
+                if (document.activeElement && document.activeElement.blur) {
+                    document.activeElement.blur();
+                }
+            } catch (e) {
+                // 拿不到节点就算了，宿主仍会收起输入法
+            }
+            post('onBlur');
+        }
+
         function touchDistance(event) {
             var a = event.touches[0];
             var b = event.touches[1];
@@ -221,8 +256,15 @@
                 return;
             }
             var touch = event.touches[0];
-            touchStart = { x: touch.clientX, y: touch.clientY, at: Date.now(), moved: false };
-        }, { passive: true });
+            touchStart = {
+                x: touch.clientX,
+                y: touch.clientY,
+                at: Date.now(),
+                moved: false,
+                scrollLeft: editor.getScrollLeft(),
+                scrollTop: editor.getScrollTop()
+            };
+        }, CAPTURE);
 
         editorDom.addEventListener('touchmove', function (event) {
             if (pinchStart && event.touches.length === 2) {
@@ -235,9 +277,23 @@
             }
             var touch = event.touches[0];
             if (Math.abs(touch.clientX - touchStart.x) > 8 || Math.abs(touch.clientY - touchStart.y) > 8) {
+                if (!touchStart.moved) {
+                    // 一旦判定为滑动，就把编辑器的焦点摘掉并通知宿主收起输入法：
+                    // 编辑器获得过焦点后 WebView 会把输入法一直挂着，之后随便一滑键盘就回来。
+                    touchStart.moved = true;
+                    blurEditor();
+                }
+            }
+        }, CAPTURE);
+
+        // 横向平移常被浏览器 / Monaco 抢走手势，此时只会收到 touchcancel；一样算「滑动过」
+        editorDom.addEventListener('touchcancel', function () {
+            if (touchStart) {
                 touchStart.moved = true;
             }
-        }, { passive: true });
+            pinchStart = null;
+            blurEditor();
+        }, CAPTURE);
 
         editorDom.addEventListener('touchend', function (event) {
             if (event.touches.length < 2) {
@@ -248,12 +304,17 @@
             }
             var start = touchStart;
             touchStart = null;
-            if (!start || start.moved || Date.now() - start.at > 600) {
+            if (!start) {
+                return;
+            }
+            if (start.moved || Date.now() - start.at > 600) {
+                // 滑动与长按都不该把键盘带出来；编辑器已获得过焦点时尤其要主动收一次
+                blurEditor();
                 return;
             }
             editor.focus();
             post('onFocus');
-        }, { passive: true });
+        }, CAPTURE);
 
         post('onReady');
     });

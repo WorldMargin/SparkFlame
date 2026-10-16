@@ -17,6 +17,7 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
+import com.worldmargin.autospark.features.autospark.ui.UiKit.pasteButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
@@ -78,12 +79,13 @@ class MacroEditActivity : Activity() {
 
         root.addView(
             actionRow {
-                addView(button("选目标").apply { setOnClickListener { pickTargets() } })
+                addView(iconButton(UiKit.Icons.TARGET, "", compact = true, hint = "选目标") { pickTargets() })
 
-                addView(button("补全").apply { setOnClickListener { editor.showCompletion() } })
-                addView(button("格式化").apply { setOnClickListener { editor.format() } })
+                addView(pasteButton(editor))
+                addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
+                addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
-                    addView(button("删除").apply { setOnClickListener { confirmDelete() } })
+                    addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDelete() })
                 }
             },
         )

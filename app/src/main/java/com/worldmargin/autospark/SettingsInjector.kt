@@ -1,14 +1,17 @@
 package com.worldmargin.autospark
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.widget.Toast
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import com.worldmargin.autospark.features.autospark.bridge.AutoSparkBridge
 import com.worldmargin.autospark.core.ModLog
 import com.worldmargin.autospark.features.autospark.ui.SparkSettingsActivity
 import java.lang.reflect.Method
@@ -69,8 +72,34 @@ object SettingsInjector {
         setLeftText(entry, "续火花")
         setModuleIcon(entry, activity)
 
-        attachClick(entry) { openSettings(activity) }
+        attachClick(entry) { showEntryMenu(activity) }
         parent.addView(entry, parent.indexOfChild(template))
+    }
+
+    /**
+     * 入口点开后的两个选项。
+     *
+     * - **立即续火花**：就地在本进程发一轮（不跳转，结果直接弹提示）——
+     *   好处是不会触发抖音那个「是否跳转」的 3 秒确认；
+     * - **跳转 APP**：打开模块自己的管理界面（跨应用，需要 3 秒内点「继续」）。
+     */
+    private fun showEntryMenu(activity: Activity) {
+        val options = arrayOf("立即续火花（就地发送）", "跳转 APP（打开管理界面）")
+        runCatching {
+            AlertDialog
+                .Builder(activity)
+                .setTitle("续火花")
+                .setItems(options) { _, which ->
+                    when (which) {
+                        0 -> {
+                            Toast.makeText(activity, "已开始续火花…", Toast.LENGTH_SHORT).show()
+                            AutoSparkBridge.manualSendInPlace(activity)
+                        }
+
+                        else -> openSettings(activity)
+                    }
+                }.show()
+        }.onFailure { ModLog.w("入口菜单弹出失败: $it") }
     }
 
     /**

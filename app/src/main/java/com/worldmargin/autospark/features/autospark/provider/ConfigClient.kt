@@ -63,6 +63,17 @@ object ConfigClient {
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
 
+    /** 刷新宿主存活时间戳（宿主进程每次响应指令时调用）。 */
+    fun touchHost(
+        context: Context,
+        at: Long,
+    ): Boolean =
+        runCatching {
+            val extras = Bundle().apply { putLong(ConfigContract.KEY_TIME, at) }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_TOUCH_HOST, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
     fun putSnapshots(
         context: Context,
         snapshots: List<ConversationSnapshot>,

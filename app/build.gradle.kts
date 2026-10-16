@@ -32,8 +32,9 @@ android {
         applicationId = "com.worldmargin.autospark"
         minSdk = 26
         targetSdk = 36
-        versionCode = gitCommitCount
-        versionName = "v1.0.0"
+        // 固定版本号：历史压缩后提交数会变小，不能再拿它当 versionCode（会触发降级安装失败）
+        versionCode = 10200
+        versionName = "v1.2.0"
     }
 
     // 按 ABI 分包：arm64-v8a / armeabi-v7a 各出一个 APK

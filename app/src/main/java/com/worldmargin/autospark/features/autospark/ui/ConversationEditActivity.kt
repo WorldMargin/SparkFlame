@@ -22,6 +22,7 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_DIM
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_TEXT
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_WARN
 import com.worldmargin.autospark.features.autospark.ui.UiKit.actionRow
+import com.worldmargin.autospark.features.autospark.ui.UiKit.card
 import com.worldmargin.autospark.features.autospark.ui.UiKit.button
 import com.worldmargin.autospark.features.autospark.ui.UiKit.column
 import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
@@ -31,6 +32,7 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.enterFromRight
 import com.worldmargin.autospark.features.autospark.ui.UiKit.icon
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
+import com.worldmargin.autospark.features.autospark.ui.UiKit.pasteButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.rounded
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.scroll
@@ -133,20 +135,33 @@ class ConversationEditActivity : Activity() {
     private fun buildSourcePage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
 
-        body.addView(sourceRow("空白（不发）", "清掉继承关系，保留内容", null))
-        body.addView(sectionTitle("内置模板"))
-        BuiltinTemplates.ALL.filter { it.body.isNotBlank() }.forEach { builtin ->
-            val id = SparkConfig.BUILTIN_PREFIX + builtin.id
-            addTemplateSource(body, config, id, builtin.name, builtin.desc)
-        }
-        body.addView(sectionTitle("自定义模板"))
-        if (config.groups.isEmpty()) {
-            body.addView(text("还没有自定义模板", 13f, COLOR_DIM))
-        } else {
-            config.groups.forEach { group ->
-                addTemplateSource(body, config, group.id, group.name.ifBlank { "(未命名)" }, "自定义模板")
-            }
-        }
+        body.addView(
+            card().apply {
+                addView(text("不继承", 15f, COLOR_TEXT, bold = true))
+                addView(sourceRow("空白（不发）", "清掉继承关系，保留内容", null))
+            },
+        )
+        body.addView(
+            card().apply {
+                addView(text("内置模板", 15f, COLOR_TEXT, bold = true))
+                BuiltinTemplates.ALL.filter { it.body.isNotBlank() }.forEach { builtin ->
+                    val id = SparkConfig.BUILTIN_PREFIX + builtin.id
+                    addTemplateSource(this, config, id, builtin.name, builtin.desc)
+                }
+            },
+        )
+        body.addView(
+            card().apply {
+                addView(text("自定义模板", 15f, COLOR_TEXT, bold = true))
+                if (config.groups.isEmpty()) {
+                    addView(text("还没有自定义模板", 13f, COLOR_DIM))
+                } else {
+                    config.groups.forEach { group ->
+                        addTemplateSource(this, config, group.id, group.name.ifBlank { "(未命名)" }, "自定义模板")
+                    }
+                }
+            },
+        )
 
         val standalone = config.conversations.filter { it.conversationId != conversationId && it.body.isNotBlank() && it.inheritFrom == null }
         if (standalone.isNotEmpty()) {
@@ -176,14 +191,10 @@ class ConversationEditActivity : Activity() {
         val expanded = sourceExpanded == templateId
         val rowView =
             row().apply {
-                background = rounded(COLOR_CARD, 10)
-                setPadding(dp(10), dp(12), dp(14), dp(12))
-                layoutParams =
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                        topMargin = dp(8)
-                    }
+                // 行在卡片里面：扁平行，靠内边距分隔
+                setPadding(dp(4), dp(12), dp(4), dp(12))
                 addView(
-                    icon(if (expanded) UiKit.Icons.CHEVRON_DOWN else UiKit.Icons.CHEVRON_RIGHT, 14f, COLOR_DIM).apply {
+                    icon(if (expanded) UiKit.Icons.FOLD else UiKit.Icons.UNFOLD, 14f, COLOR_DIM).apply {
                         setPadding(0, 0, dp(10), 0)
                         isClickable = true
                         setOnClickListener {
@@ -233,12 +244,8 @@ class ConversationEditActivity : Activity() {
         source: TemplateSource?,
     ): View =
         row().apply {
-            background = rounded(COLOR_CARD, 10)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            layoutParams =
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(8)
-                }
+            // 行在卡片里面：不再自画卡片底与外边距，只留内边距
+            setPadding(dp(4), dp(12), dp(4), dp(12))
             addView(
                 column().apply {
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -333,12 +340,13 @@ class ConversationEditActivity : Activity() {
     /** 底部动作条：放在编辑区下面，键盘弹出时也够得着；横向可滚动，按钮再多也不会被挤掉。 */
     private fun actionBar(): View =
         actionRow {
-            addView(iconButton(UiKit.Icons.PLAY, "预览", compact = true) { showPreview() })
-            addView(iconButton(UiKit.Icons.SEARCH, "补全", compact = true) { editor.showCompletion() })
-            addView(iconButton(UiKit.Icons.EDIT, "格式化", compact = true) { editor.format() })
-            addView(iconButton(UiKit.Icons.CODE, "", compact = true) { pickMacros() })
+            addView(iconButton(UiKit.Icons.PREVIEW, "", compact = true, hint = "预览") { showPreview() })
+            addView(pasteButton(editor))
+            addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
+            addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
+            addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
             if (ConfigStore.load(this@ConversationEditActivity).conversation(conversationId)?.inheritFrom != null) {
-                addView(iconButton(UiKit.Icons.REFRESH, "", compact = true) { reset() })
+                addView(iconButton(UiKit.Icons.DISCARD, "", compact = true, hint = "重置为父模板内容") { reset() })
             }
         }
 

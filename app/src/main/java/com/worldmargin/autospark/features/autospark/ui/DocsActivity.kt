@@ -15,6 +15,7 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.button
 import com.worldmargin.autospark.features.autospark.ui.UiKit.column
 import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
+import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
@@ -45,9 +46,9 @@ class DocsActivity : Activity() {
                 addView(
                     row().apply {
                         setPadding(dp(16), dp(4), dp(16), dp(4))
-                        addView(button("复制全文", primary = true).apply { setOnClickListener { copyAll() } })
-                        addView(button("导出 .md").apply { setOnClickListener { export() } })
-                        addView(button("分享").apply { setOnClickListener { share() } })
+                        addView(iconButton(UiKit.Icons.COPY, "复制全文", primary = true, compact = true) { copyAll() })
+                        addView(iconButton(UiKit.Icons.DOWNLOAD, "导出 .md", compact = true) { export() })
+                        addView(iconButton(UiKit.Icons.SHARE, "分享", compact = true) { share() })
                     },
                 )
                 addView(

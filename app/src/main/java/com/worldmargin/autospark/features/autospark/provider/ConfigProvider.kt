@@ -60,6 +60,20 @@ object ConfigContract {
     const val EXTRA_SUMMARY = "summary"
 
     /**
+     * 管理界面 → 抖音进程：探活。
+     *
+     * 宿主进程没在运行时，发出去的指令广播会石沉大海（手动续火花看起来「点了没反应」），
+     * 所以界面先探活、确认在线再下指令；宿主收到立刻回 [ACTION_HOST_ALIVE]。
+     */
+    const val ACTION_PING_HOST = "com.worldmargin.autospark.action.PING_HOST"
+
+    /** 抖音进程 → 管理界面：探活回执（同时刷新存活时间戳）。 */
+    const val ACTION_HOST_ALIVE = "com.worldmargin.autospark.action.HOST_ALIVE"
+
+    /** 写入宿主存活时间戳，Bundle["time"]。 */
+    const val METHOD_TOUCH_HOST = "touchHost"
+
+    /**
      * 抖音进程 → 本模块进程：唤醒。
      *
      * 宿主调本模块的 ContentProvider 之前先发这个广播，让模块进程（连同它的 provider）先建起来。
@@ -137,6 +151,12 @@ class ConfigProvider : ContentProvider() {
             ConfigContract.METHOD_PRUNE -> {
                 val now = extras?.getLong(ConfigContract.KEY_TIME) ?: System.currentTimeMillis()
                 ConfigStore.update(context) { config -> config.pruneTemplates(now) }
+                Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
+            }
+
+            ConfigContract.METHOD_TOUCH_HOST -> {
+                val at = extras?.getLong(ConfigContract.KEY_TIME) ?: System.currentTimeMillis()
+                ConfigStore.update(context) { config -> config.copy(hostAliveAt = at) }
                 Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
             }
 

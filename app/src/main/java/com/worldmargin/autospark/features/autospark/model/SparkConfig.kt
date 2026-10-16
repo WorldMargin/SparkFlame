@@ -1,5 +1,6 @@
 package com.worldmargin.autospark.features.autospark.model
 
+import com.worldmargin.autospark.features.autospark.script.SparkFunctionSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -80,6 +81,19 @@ data class UserFunction(
     /** 形参名列表（去掉空项）。 */
     val paramList: List<String>
         get() = params.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+    /**
+     * 完整函数声明。
+     *
+     * 新数据 [body] 本身就是 `function 名字(形参) { … }`；早期版本只存「函数内部」，
+     * 这里按名字与形参补一层包装，老配置打开后照样能编辑。
+     */
+    fun declaration(): String =
+        if (SparkFunctionSource.looksLikeDeclaration(body)) {
+            body.trim()
+        } else {
+            SparkFunctionSource.wrapLegacy(name, params, body)
+        }
 }
 
 /**
@@ -150,6 +164,8 @@ data class SparkConfig(
      */
     val hostNote: String = "",
     val hostNoteAt: Long = 0L,
+    /** 宿主（抖音进程）最近一次响应指令的时间戳：界面用它判断抖音是否在运行。 */
+    val hostAliveAt: Long = 0L,
     /** 脚本编辑器用 Monaco（WebView）；关闭则用原生 sora-editor。 */
     val useMonacoEditor: Boolean = true,
 ) {
@@ -255,13 +271,13 @@ data class SparkConfig(
             }
         }
 
-    /** 自定义函数注入：`ctx.functions.<名字> = function(<形参>) { <函数体> };` */
+    /** 自定义函数注入：函数声明本体 + 挂到 `ctx.functions.<名字>`。 */
     fun functionsPrelude(): String =
         functions
             .filter { it.name.isNotBlank() && it.body.isNotBlank() }
             .joinToString("\n") { fn ->
-                val params = fn.paramList.joinToString(", ")
-                "ctx.functions.${fn.name} = function($params) {\n${fn.body}\n};"
+                val declaration = fn.declaration()
+                "$declaration\nctx.functions.${fn.name} = ${fn.name};"
             }
 
     /** 当前在「已选目标」里的会话（单聊、按判定或手动归属）。 */
@@ -420,6 +436,19 @@ object TemplateOps {
         now: Long,
     ): List<ConversationTemplate> = cascade(config, parentId, parentBody, now) { child, _ -> child.autoSync && !child.modified }
 
+    /**
+     * 只把新内容推给点名的这几个子模板（保存父模板时用户确认「覆盖这些」用）。
+     *
+     * 级联时只认点名集合，集合里的子模板会连同它的子树一起跟随。
+     */
+    fun syncSelected(
+        config: SparkConfig,
+        parentId: String,
+        parentBody: String,
+        selected: Set<String>,
+        now: Long,
+    ): List<ConversationTemplate> = cascade(config, parentId, parentBody, now) { child, _ -> child.conversationId in selected || child.inheritFrom in selected }
+
     /** 逐层把父内容推给子模板（[accept] 决定某个子模板这次要不要跟）。 */
     private fun cascade(
         config: SparkConfig,
@@ -492,6 +521,7 @@ object ConfigCodec {
     private const val KEY_FORCED_SKIP = "forcedSkip"
     private const val KEY_HOST_NOTE = "hostNote"
     private const val KEY_HOST_NOTE_AT = "hostNoteAt"
+    private const val KEY_HOST_ALIVE_AT = "hostAliveAt"
     private const val KEY_MACROS = "macros"
     private const val KEY_FUNCTIONS = "functions"
     private const val KEY_USE_MONACO = "useMonacoEditor"
@@ -591,6 +621,7 @@ object ConfigCodec {
             .put(KEY_FUNCTIONS, functions)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
+            .put(KEY_HOST_ALIVE_AT, config.hostAliveAt)
             .put(KEY_USE_MONACO, config.useMonacoEditor)
             .toString()
     }
@@ -704,6 +735,7 @@ object ConfigCodec {
             functions = functions,
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),
+            hostAliveAt = root.optLong(KEY_HOST_ALIVE_AT),
             useMonacoEditor = root.optBoolean(KEY_USE_MONACO, true),
         )
     }

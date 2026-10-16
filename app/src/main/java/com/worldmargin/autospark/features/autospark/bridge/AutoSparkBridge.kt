@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.widget.Toast
 import com.worldmargin.autospark.core.HostRuntime
 import com.worldmargin.autospark.core.ModLog
 import com.worldmargin.autospark.features.account.bridge.AccountBridge
@@ -127,12 +128,21 @@ object AutoSparkBridge {
                     intent: Intent?,
                 ) {
                     val action = intent?.action
-                    if (action == ConfigContract.ACTION_SEND_NOW) {
-                        val targets = intent.getStringArrayListExtra(ConfigContract.EXTRA_TARGETS).orEmpty()
-                        Thread({ sendNowAndNotify(context, targets) }, "doumcp-send").apply { isDaemon = true }.start()
-                        return
+                    ConfigClient.touchHost(context, System.currentTimeMillis())
+                    when (action) {
+                        ConfigContract.ACTION_PING_HOST -> {
+                            // 探活：立刻回执（界面拿到回执才认为宿主在线）
+                            runCatching { context.sendBroadcast(Intent(ConfigContract.ACTION_HOST_ALIVE)) }
+                                .onFailure { ModLog.e("探活回执发送失败", it) }
+                        }
+
+                        ConfigContract.ACTION_SEND_NOW -> {
+                            val targets = intent.getStringArrayListExtra(ConfigContract.EXTRA_TARGETS).orEmpty()
+                            Thread({ sendNowAndNotify(context, targets) }, "doumcp-send").apply { isDaemon = true }.start()
+                        }
+
+                        else -> Thread({ refreshAndNotify(context) }, "doumcp-refresh").apply { isDaemon = true }.start()
                     }
-                    Thread({ refreshAndNotify(context) }, "doumcp-refresh").apply { isDaemon = true }.start()
                 }
             }
         refreshReceiver = receiver
@@ -140,6 +150,7 @@ object AutoSparkBridge {
             IntentFilter().apply {
                 addAction(ConfigContract.ACTION_REFRESH_SNAPSHOT)
                 addAction(ConfigContract.ACTION_SEND_NOW)
+                addAction(ConfigContract.ACTION_PING_HOST)
             }
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -152,13 +163,15 @@ object AutoSparkBridge {
     }
 
     /**
-     * 手动发送一轮（界面点「立即发送」）。
+     * 手动发送一轮（界面点「立即发送」，或抖音设置页入口选「立即续火花」）。
      *
      * 不受总开关与「今日已发」限制：这是用户明确点的操作；[targets] 为空表示发给所有「已选目标」。
+     * [toast] 为 true 时直接在宿主里弹提示（抖音设置页入口那条路径用，管理界面不在前台）。
      */
     private fun sendNowAndNotify(
         context: Context,
         targets: List<String>,
+        toast: Boolean = false,
     ) {
         wakeModule(context)
         val summary = runRenew(context, respectEnabled = false, only = targets.toSet(), ignoreSentToday = true)
@@ -174,11 +187,22 @@ object AutoSparkBridge {
             }
         HostTrace.add(context, line)
         ModLog.i(line)
+        if (toast) {
+            val brief = line.lineSequence().first()
+            runCatching { Toast.makeText(context, brief, Toast.LENGTH_LONG).show() }
+        }
         runCatching {
             context.sendBroadcast(
                 Intent(ConfigContract.ACTION_SEND_DONE).putExtra(ConfigContract.EXTRA_SUMMARY, line),
             )
         }.onFailure { ModLog.e("发送结果广播失败", it) }
+    }
+
+    /** 抖音设置页入口里的「立即续火花」：就地发一轮，结果用提示告诉用户。 */
+    fun manualSendInPlace(context: Context) {
+        Thread({ sendNowAndNotify(context, emptyList(), toast = true) }, "doumcp-send-now")
+            .apply { isDaemon = true }
+            .start()
     }
 
     /** 把结果数组拼成「名字（原因）」的短串，便于界面直接展示。 */
@@ -205,6 +229,7 @@ object AutoSparkBridge {
      * 先发一个包内广播把模块进程拉起来（进程创建时系统会一并安装它的 provider），等它就绪再写。
      */
     private fun wakeModule(context: Context) {
+        ConfigClient.touchHost(context, System.currentTimeMillis())
         runCatching {
             context.sendBroadcast(Intent(ConfigContract.ACTION_WAKE).setPackage(MODULE_PACKAGE))
         }.onFailure { ModLog.e("唤醒模块进程失败", it) }
@@ -247,13 +272,15 @@ object AutoSparkBridge {
 
         for (index in 0 until conversations.length()) {
             val conversation = conversations.optJSONObject(index) ?: continue
-            if (conversation.optBoolean("isGroup")) continue
+            val isGroup = conversation.optBoolean("isGroup")
             val conversationId = conversation.optString("conversationId")
             if (conversationId.isEmpty()) continue
             if (only.isNotEmpty()) {
                 // 手动点名：只发这些，不再看抖音判定与手动归属
                 if (conversationId !in only) continue
             } else {
+                // 群聊默认不参与自动发送：只有被手动移进「已选目标」才发（界面里群聊单独一张卡片）
+                if (isGroup && conversationId !in config.forcedRenew) continue
                 // 「需要续」来自抖音判定，可被管理界面的手动移动覆盖
                 if (conversationId in config.forcedSkip) continue
                 val spark = conversation.optJSONObject("spark")

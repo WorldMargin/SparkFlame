@@ -22,6 +22,7 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
+import com.worldmargin.autospark.features.autospark.ui.UiKit.pasteButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
@@ -75,14 +76,15 @@ class TemplateEditActivity : Activity() {
 
         root.addView(
             actionRow {
-                addView(button("预览", primary = true).apply { setOnClickListener { showPreview() } })
+                addView(iconButton(UiKit.Icons.PREVIEW, "", primary = true, compact = true, hint = "预览") { showPreview() })
 
-                addView(button("补全").apply { setOnClickListener { editor.showCompletion() } })
-                addView(button("格式化").apply { setOnClickListener { editor.format() } })
+                addView(pasteButton(editor))
+                addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
+                addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
-                    addView(button("宏").apply { setOnClickListener { pickMacros() } })
-                    addView(button("继承会话").apply { setOnClickListener { pickMembers() } })
-                    addView(button("删除").apply { setOnClickListener { confirmDelete() } })
+                    addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
+                    addView(iconButton(UiKit.Icons.PERSON_ADD, "", compact = true, hint = "继承会话") { pickMembers() })
+                    addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDelete() })
                 }
             },
         )
@@ -152,8 +154,54 @@ class TemplateEditActivity : Activity() {
         }
     }
 
-    /** 父模板内容改动后，询问如何同步子模板。 */
+    /**
+     * 父模板内容改动后，询问如何同步子模板。
+     *
+     * 有「已本地改过、又没开跟随更新」的派生模板时，先把它们**列出来**再问要不要覆盖 ——
+     * 直接静默覆盖会把别人改过的文案冲掉。
+     */
     private fun askSyncChildren(group: TemplateGroup) {
+        val config = ConfigStore.load(this)
+        val pending =
+            config
+                .membersOf(group.id)
+                .filter { it.modified && !it.autoSync }
+        if (pending.isEmpty()) {
+            askSyncAll(group)
+            return
+        }
+        val names =
+            pending.joinToString("\n") { member ->
+                "· " + config.conversationLabel(member.conversationId)
+            }
+        AlertDialog
+            .Builder(this)
+            .setTitle("要覆盖这 ${pending.size} 个派生模板吗？")
+            .setMessage("下面这些派生模板已经本地改过、又没有开启跟随更新：\n\n$names\n\n覆盖后会变成当前模板的内容。")
+            .setPositiveButton("覆盖这些") { _, _ ->
+                ConfigStore.update(this) { cfg ->
+                    cfg.copy(
+                        conversations =
+                            TemplateOps.syncSelected(
+                                cfg,
+                                group.id,
+                                group.body,
+                                pending.map { it.conversationId }.toSet(),
+                                System.currentTimeMillis(),
+                            ),
+                    )
+                }
+                Toast.makeText(this, "已覆盖 ${pending.size} 个派生模板", Toast.LENGTH_SHORT).show()
+                finish()
+            }.setNeutralButton("全部同步") { _, _ ->
+                syncAll(group)
+            }.setNegativeButton("保留它们的修改") { _, _ -> finish() }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** 没有「已改但未跟随」的子模板时，仍给出常规的同步选择。 */
+    private fun askSyncAll(group: TemplateGroup) {
         val options = arrayOf("仅未修改的会话模板", "仅已修改的会话模板", "全部会话模板", "不同步")
         AlertDialog
             .Builder(this)
@@ -178,6 +226,18 @@ class TemplateEditActivity : Activity() {
             }
             .setCancelable(false)
             .show()
+    }
+
+    /** 全部同步（把新内容推给所有子模板）。 */
+    private fun syncAll(group: TemplateGroup) {
+        ConfigStore.update(this) { config ->
+            config.copy(
+                conversations =
+                    TemplateOps.syncChildren(config, group.id, group.body, SyncMode.ALL, System.currentTimeMillis()),
+            )
+        }
+        Toast.makeText(this, "已全部同步", Toast.LENGTH_SHORT).show()
+        finish()
     }
 
     /** 选择哪些会话继承本模板（勾选=继承本模板，取消=变为空白自定义）。 */

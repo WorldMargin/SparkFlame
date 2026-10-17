@@ -230,11 +230,32 @@ object AutoSparkBridge {
      * Android 会拒绝解析 provider（日志里是 Failed to find provider info），配置就写不进去。
      * 先发一个包内广播把模块进程拉起来（进程创建时系统会一并安装它的 provider），等它就绪再写。
      */
+    /**
+     * 叫醒模块进程（让它的 ContentProvider 安装上）。
+     *
+     * 两级：先发 `ACTION_WAKE` 广播；模块 App 被系统置为「停用」
+     * （`adb install` 覆盖安装、`am force-stop` 之后都是）时广播会被丢掉，
+     * 这时改用启动一个透明空页面把进程拉起来（停用状态下只有启动 Activity 才管用）。
+     */
     private fun wakeModule(context: Context) {
         ConfigClient.touchHost(context, System.currentTimeMillis())
         runCatching {
-            context.sendBroadcast(Intent(ConfigContract.ACTION_WAKE).setPackage(MODULE_PACKAGE))
+            context.sendBroadcast(
+                Intent(ConfigContract.ACTION_WAKE)
+                    .setPackage(MODULE_PACKAGE)
+                    .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES),
+            )
         }.onFailure { ModLog.e("唤醒模块进程失败", it) }
+        Thread.sleep(WAKE_WAIT_MS)
+        if (ConfigClient.read(context) != null) return
+        // 广播叫不醒（模块 App 被停用）：启动透明空页面兜底，让进程 / provider 就位
+        runCatching {
+            context.startActivity(
+                Intent()
+                    .setClassName(MODULE_PACKAGE, MODULE_PACKAGE + ".WakeActivity")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
+            )
+        }.onFailure { ModLog.w("启动模块空页面失败：$it") }
         Thread.sleep(WAKE_WAIT_MS)
     }
 
@@ -473,9 +494,12 @@ object AutoSparkBridge {
             }
         }
 
+        val skippedCount = skipped.length()
         com.worldmargin.autospark.core.DouToastHelper.show(
             context,
-            "（星火燎原：完成 ${sent.length()} 个，失败 ${failed.length()} 个）",
+            "（星火燎原：已发 ${sent.length()} 个" +
+                (if (skippedCount > 0) "，跳过 $skippedCount 个" else "") +
+                "，失败 ${failed.length()} 个）",
         )
 
         return JSONObject()
@@ -508,6 +532,11 @@ object AutoSparkBridge {
                         if (attempt >= MAX_ATTEMPTS) {
                             HostTrace.add(context, "探测 $MAX_ATTEMPTS 次仍未就绪，本次跳过")
                             ModLog.i("会话列表未就绪，本次不续火花")
+                            // 报结果：不能只弹「正在检测」就没下文
+                            com.worldmargin.autospark.core.DouToastHelper.show(
+                                context,
+                                "（星火燎原：IM 未就绪，本次已跳过）",
+                            )
                             return@runCatching
                         }
                         Thread.sleep(RETRY_DELAY_MS)
@@ -524,12 +553,15 @@ object AutoSparkBridge {
                         HostTrace.add(context, line)
                         ModLog.i(line)
                     } else {
-                        HostTrace.add(context, "续火花未执行：${summary.optString("error")}")
-                        ModLog.i("自动续火花未执行：${summary.optString("error")}")
+                        val reason = summary.optString("error").ifBlank { "未知原因" }
+                        HostTrace.add(context, "续火花未执行：$reason")
+                        ModLog.i("自动续火花未执行：$reason")
+                        com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：$reason）")
                     }
                 }.onFailure {
                     HostTrace.add(context, "执行异常：${it.message ?: it.toString()}")
                     ModLog.e("自动续火花执行异常", it)
+                    com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：执行异常）")
                 }
             },
             "doumcp-autospark",

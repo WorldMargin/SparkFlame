@@ -81,19 +81,25 @@ class ModuleMain : XposedModule() {
                 .onFailure { ModLog.e("Application.attach 定位失败，跳过", it) }
                 .getOrNull() ?: return
         hook(attach).intercept { chain ->
-            if (attached.compareAndSet(false, true)) {
-                val raw = chain.getArg(0) as Context
-                val context = raw.applicationContext ?: raw
-                appContext = context
-                HostRuntime.context = context
-                runCatching { AutoSparkBridge.installRefreshReceiver(context) }
-                    .onFailure { ModLog.e("刷新会话广播注册失败", it) }
-                runCatching { AutoSparkBridge.scheduleOnAppStart() }
-                    .onFailure { ModLog.e("续火花任务安排失败", it) }
-                runCatching { (chain.thisObject as? Application)?.let { AutoSparkBridge.startDayWatcher(it) } }
-                    .onFailure { ModLog.e("跨天值守挂载失败", it) }
+            val first = attached.compareAndSet(false, true)
+            val raw = chain.getArg(0) as Context
+            try {
+                // 先让 attach 跑完：attach 完成前 ContextWrapper.mBase 还是 null，
+                // 这时去取 applicationContext 会 NPE（跨天值守就是这么挂不上的）
+                chain.proceed()
+            } finally {
+                if (first) {
+                    val context = raw.applicationContext ?: raw
+                    appContext = context
+                    HostRuntime.context = context
+                    runCatching { AutoSparkBridge.installRefreshReceiver(context) }
+                        .onFailure { ModLog.e("刷新会话广播注册失败", it) }
+                    runCatching { AutoSparkBridge.scheduleOnAppStart() }
+                        .onFailure { ModLog.e("续火花任务安排失败", it) }
+                    runCatching { (chain.thisObject as? Application)?.let { AutoSparkBridge.startDayWatcher(it) } }
+                        .onFailure { ModLog.e("跨天值守挂载失败", it) }
+                }
             }
-            chain.proceed()
         }
     }
 

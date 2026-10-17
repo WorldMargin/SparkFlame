@@ -177,6 +177,8 @@ object AutoSparkBridge {
     ) {
         wakeModule(context)
         val summary = runRenew(context, respectEnabled = false, only = targets.toSet(), ignoreSentToday = true)
+        // 发完把快照写回模块 App：不用打开 App 也能看到最新状态与已发记录
+        pushSnapshotToModule(context, attempts = 2)
         val line =
             if (summary.optBoolean("ok")) {
                 val sent = summary.optJSONArray("sent")
@@ -283,6 +285,13 @@ object AutoSparkBridge {
     /** 自动任务互斥：上一轮没跑完就不再起新的。 */
     private val autoRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 上次把快照写回 App 的时间（前台切换很频，限一下频）。 */
+    @Volatile
+    private var lastSnapshotPushMs = 0L
+
+    /** 前台刷新间隔：1 分钟内不重复写。 */
+    private const val SNAPSHOT_PUSH_INTERVAL_MS = 60_000L
+
     private var watcherContext: Context? = null
 
     /** 「上次自动跑完的日期」落在抖音自己的目录里，跟着抖音的数据走。 */
@@ -316,8 +325,11 @@ object AutoSparkBridge {
 
                 override fun onActivityStarted(activity: android.app.Activity) {
                     visibleActivities.incrementAndGet()
-                    // 每次回到界面：先按条件查一次，再按当前时间重新排表
-                    Thread { autoRunIfDayChanged(context) }.start()
+                    // 每次回到界面：先把快照刷新一下（限流），再按条件补跑，最后重新排表
+                    Thread {
+                        pushSnapshotIfStale(context)
+                        autoRunIfDayChanged(context)
+                    }.start()
                     rescheduleWatcher()
                 }
 
@@ -390,6 +402,19 @@ object AutoSparkBridge {
         } finally {
             autoRunning.set(false)
         }
+    }
+
+    /**
+     * 回到前台时刷新一下 App 里的快照（限流）。
+     *
+     * 以前只有「今天还没自动跑过」时才会刷，白天对方回复了、火花变成已续，
+     * App 里还是早上那份旧数据（表现就是「明明已续了还算待对方回复」）。
+     */
+    private fun pushSnapshotIfStale(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastSnapshotPushMs < SNAPSHOT_PUSH_INTERVAL_MS) return
+        lastSnapshotPushMs = now
+        pushSnapshotToModule(context, attempts = 3)
     }
 
     /**
@@ -476,15 +501,25 @@ object AutoSparkBridge {
                 .put("skipped", skipped)
                 .put("failed", failed)
         }
-        // 待续再拆一层：我们今天已经发过的算「待对方回复」，剩下的才是「待发」
-        val waitingReply = candidates.count { config.sentDays[it.optString("conversationId")] == today }
-        val toSend = candidates.size - waitingReply
+        // 待续拆两层：
+        //  待发        = 这轮确实要发的（今天还没发）
+        //  待对方回复 = 今天已经发过、火花还是灰的（state 2/3）—— 已经互动过的（state=1）不算
+        // （手动移进「已选目标」的会议即使已续也在 candidates 里，所以这里要按 state 过滤一遍）
+        val waitingReply =
+            candidates.count { conv ->
+                val spark = conv.optJSONObject("spark")
+                config.sentDays[conv.optString("conversationId")] == today &&
+                    spark != null &&
+                    spark.optInt("state", -1) in 2..3
+            }
+        val toSend = candidates.count { config.sentDays[it.optString("conversationId")] != today }
         val pendingHint =
             if (waitingReply == 0) {
                 "（有 $toSend 个待发）"
             } else {
                 "（待发 $toSend 个 · 待对方回复 $waitingReply 个）"
             }
+        HostTrace.add(context, "待发 $toSend 个，待对方回复 $waitingReply 个")
         com.worldmargin.autospark.core.DouToastHelper.show(context, pendingHint)
 
         // 第二遍：真正发送

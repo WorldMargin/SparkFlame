@@ -508,8 +508,13 @@ class SparkSettingsActivity : Activity() {
             SUB_OVERVIEW -> {
                 val conversations = config.snapshots.filter { !it.isGroup }
                 val renewal = conversations.filter { config.needsRenewal(it) }
+                val today = todayText()
+                val pending = renewal.filter { it.state == SPARK_PENDING }
+                val waitingReply = pending.count { config.sentDays[it.conversationId] == today }
+                val toSend = pending.size - waitingReply
                 body.addView(infoCard("会话总数", conversations.size.toString()))
-                body.addView(infoCard("今日待续", renewal.count { it.state == SPARK_PENDING }.toString()))
+                body.addView(infoCard("待发", toSend.toString()))
+                body.addView(infoCard("待对方回复", waitingReply.toString()))
                 body.addView(infoCard("待重燃", renewal.count { it.state == SPARK_RECOVER }.toString()))
                 body.addView(infoCard("今日已续", conversations.count { it.state == SPARK_DONE }.toString()))
                 body.addView(infoCard("已选目标", config.selectedIds().size.toString()))
@@ -907,17 +912,37 @@ class SparkSettingsActivity : Activity() {
             "发送全部 $renewalCount 个"
         }
 
-    /** 火花状态文案：今天已互动 / 今天还没互动 / 待重燃（断了在恢复）/ 可点亮 / 没有火苗。 */
-    private fun sparkLabel(snapshot: ConversationSnapshot): String =
-        when {
+    /**
+     * 火花状态文案。
+     *
+     * 「待续」分两种：**待发**（今天我们还没发）与 **待对方回复**
+     * （我们今天已经发了、对方还没回，所以抖音还算「今天没互动」）——
+     * 后者不用再发，只能等。
+     */
+    private fun sparkLabel(
+        config: SparkConfig,
+        snapshot: ConversationSnapshot,
+    ): String {
+        val sentToday = config.sentDays[snapshot.conversationId] == todayText()
+        return when {
             // 没有火苗时抖音可能给一句引导文案（互为好友但还没建立火苗 → 「可点亮」）
             !snapshot.hasSpark -> snapshot.stateText.takeIf { it.isNotBlank() } ?: "无火花"
             snapshot.state == SPARK_DONE -> "火花 ${snapshot.days} 天 · 今日已续"
-            snapshot.state == SPARK_PENDING -> "火花 ${snapshot.days} 天 · 今日待续"
+            snapshot.state == SPARK_PENDING ->
+                if (sentToday) {
+                    "火花 ${snapshot.days} 天 · 已发，待对方回复"
+                } else {
+                    "火花 ${snapshot.days} 天 · 待发"
+                }
             snapshot.state == SPARK_RECOVER ->
-                "待重燃 ${snapshot.recoverDays}/${snapshot.recoverNeedDays.coerceAtLeast(1)} 天"
+                "待重燃 ${snapshot.recoverDays}/${snapshot.recoverNeedDays.coerceAtLeast(1)} 天" +
+                    if (sentToday) "（已发，待对方回复）" else ""
             else -> "火花 ${snapshot.days} 天"
         }
+    }
+
+    /** 今天的日期（与宿主记录同一格式）。 */
+    private fun todayText(): String = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
 
     /** 会话条目（放进分组卡片里，自身不画背景；条目之间的分隔线由分组卡片负责）。 */
     private fun buildConversationRow(
@@ -939,7 +964,7 @@ class SparkSettingsActivity : Activity() {
                 in config.forcedSkip -> "　手动移出"
                 else -> ""
             }
-        val sparkText = sparkLabel(snapshot)
+        val sparkText = sparkLabel(config, snapshot)
         val sparkColor =
             when {
                 snapshot.state == SPARK_RECOVER || snapshot.state == SPARK_PENDING -> COLOR_WARN

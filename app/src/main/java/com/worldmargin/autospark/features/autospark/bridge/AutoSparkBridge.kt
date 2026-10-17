@@ -375,16 +375,47 @@ object AutoSparkBridge {
         if (lastRunDay(context) == today) return
         if (!autoRunning.compareAndSet(false, true)) return
         try {
+            // 先把快照写回模块 App：跨天补跑不需要用户打开 App 也能看到最新数据
+            pushSnapshotToModule(context)
             val summary = runRenew(context, respectEnabled = true)
             if (summary.optBoolean("ok")) {
                 markRunDay(context, today)
                 val sent = summary.optJSONArray("sent")?.length() ?: 0
                 HostTrace.add(context, "跨天补跑完成：已发 $sent 个")
             }
+            // 发完再刷一次：状态 / 已发记录都变了
+            pushSnapshotToModule(context, attempts = 2)
         } catch (error: Throwable) {
             ModLog.e("跨天补跑失败", error)
         } finally {
             autoRunning.set(false)
+        }
+    }
+
+    /**
+     * 把当前会话快照写回模块 App（就是界面里看到的那份缓存）。
+     *
+     * IM 没就绪就短退避重试几次；写入走的是 ContentProvider，
+     * 所以**不需要用户打开 App**。
+     */
+    private fun pushSnapshotToModule(
+        context: Context,
+        attempts: Int = 6,
+    ): Boolean {
+        wakeModule(context)
+        var attempt = 0
+        while (true) {
+            val outcome = refreshSnapshot(context)
+            if (outcome.ok) {
+                HostTrace.add(context, "快照已同步到 App：${outcome.detail}")
+                return true
+            }
+            attempt++
+            if (attempt >= attempts) {
+                HostTrace.add(context, "快照同步失败：${outcome.detail}")
+                return false
+            }
+            runCatching { Thread.sleep(RETRY_DELAY_MS) }
         }
     }
 
@@ -445,7 +476,16 @@ object AutoSparkBridge {
                 .put("skipped", skipped)
                 .put("failed", failed)
         }
-        com.worldmargin.autospark.core.DouToastHelper.show(context, "（有 ${candidates.size} 个待续）")
+        // 待续再拆一层：我们今天已经发过的算「待对方回复」，剩下的才是「待发」
+        val waitingReply = candidates.count { config.sentDays[it.optString("conversationId")] == today }
+        val toSend = candidates.size - waitingReply
+        val pendingHint =
+            if (waitingReply == 0) {
+                "（有 $toSend 个待发）"
+            } else {
+                "（待发 $toSend 个 · 待对方回复 $waitingReply 个）"
+            }
+        com.worldmargin.autospark.core.DouToastHelper.show(context, pendingHint)
 
         // 第二遍：真正发送
         for (conversation in candidates) {

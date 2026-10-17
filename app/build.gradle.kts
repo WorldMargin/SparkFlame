@@ -92,6 +92,8 @@ dependencies {
 /**
  * 使用文档：把仓库根目录的 Markdown 同步进 assets（App 内的「使用文档」直接读这份），
  * 保证单一来源 —— 改文档不用改两处。
+ *
+ * 同一份文档还会写一份到仓库的 `docs/manual.md`：网页上能直接看，也方便把链接丢给 AI。
  */
 val manualSource = layout.projectDirectory.file("../../使用文档.md")
 val syncManual =
@@ -102,4 +104,13 @@ val syncManual =
         rename { "manual.md" }
     }
 
-tasks.named("preBuild") { dependsOn(syncManual) }
+/** `docs/manual.md`：对外的那一份（assets 里那份只给 App 用，网页上不好找）。 */
+val syncManualToRepo =
+    tasks.register<Copy>("syncManualToRepo") {
+        onlyIf { manualSource.asFile.exists() }
+        from(manualSource)
+        into(rootProject.layout.projectDirectory.dir("docs"))
+        rename { "manual.md" }
+    }
+
+tasks.named("preBuild") { dependsOn(syncManual, syncManualToRepo) }

@@ -97,13 +97,28 @@
              *
              * 长按的原生选择菜单已被宿主关掉，粘贴只能走这里：把剪贴板内容插到当前选区/光标处。
              */
-            insertText: function (text) {
+            hideSelectMenu: function () { hideMenu(); },
+
+        insertText: function (text) {
                 if (!text) {
                     return;
                 }
                 var selection = editor.getSelection();
                 editor.executeEdits('spark-paste', [{ range: selection, text: text, forceMoveMarkers: true }]);
                 editor.pushUndoStop();
+                editor.focus();
+            },
+            /** 原生长按菜单用的四个动作（Kotlin 侧 AlertDialog 调用）。 */
+            selectAll: function () {
+                var model = editor.getModel && editor.getModel();
+                if (model) editor.setSelection(model.getFullRange());
+                editor.focus();
+            },
+            copySelection: function () {
+                copySelection();
+            },
+            undo: function () {
+                editor.trigger('spark-undo', 'undo', null);
                 editor.focus();
             },
             setTypes: function (dts) {
@@ -114,6 +129,21 @@
             },
             setDark: function (dark) {
                 monaco.editor.setTheme(dark ? 'vs-dark' : 'vs');
+            },
+            /**
+             * 紧凑模式：给「变量」页那种两三行高的小输入框用。
+             * 关掉行号、把上下内边距收窄，字号也不跟着整页缩放走（小框里放不下大字号）；
+             * 高度由 Kotlin 侧按行数算好再设给 WebView。
+             */
+            setCompact: function (compact) {
+                compact = !!compact;
+                editor.updateOptions({
+                    lineNumbers: compact ? 'off' : 'on',
+                    lineNumbersMinChars: compact ? 0 : 2,
+                    fontSize: compact ? Math.min(fontSize, 14) : fontSize,
+                    padding: compact ? { top: 4, bottom: 4 } : { top: 10, bottom: 80 }
+                });
+                return compact;
             },
             focus: function () {
                 editor.focus();
@@ -245,6 +275,51 @@
             return Math.sqrt((a.clientX - b.clientX) * (a.clientX - b.clientX) + (a.clientY - b.clientY) * (a.clientY - b.clientY));
         }
 
+        // ---------------------------------------------------------- 长按菜单
+        // Monaco 自己画文字并接管触摸，安卓原生选择手柄用不上；长按让**原生**弹菜单
+        // （全选 / 复制 / 粘贴 / 撤销）：在网页里画会盖住小输入框，编辑器只有两三行高时整块都被遮住。
+        var longPressTimer = null;
+        var longPressOrigin = null;
+
+        function hideMenu() {
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        }
+
+        function selectedText() {
+            var model = editor.getModel && editor.getModel();
+            var selection = editor.getSelection && editor.getSelection();
+            if (!model || !selection) return '';
+            return model.getValueInRange(selection) || '';
+        }
+
+        /** 复制：选区优先，没选区就是全文（Kotlin 侧写系统剪贴板）。 */
+        function copySelection() {
+            var text = selectedText();
+            if (!text) {
+                var model = editor.getModel && editor.getModel();
+                text = model ? model.getValue() : '';
+            }
+            if (text) post('onCopy', text);
+        }
+
+        /** 长按：交给 Kotlin 弹原生菜单（不占编辑器空间）。 */
+        function showMenu() {
+            hideMenu();
+            blurEditor();
+            post('onMenuRequest');
+        }
+
+        function armLongPress() {
+            if (longPressTimer) clearTimeout(longPressTimer);
+            longPressTimer = setTimeout(function () {
+                longPressTimer = null;
+                showMenu();
+            }, 600);
+        }
+
         editorDom.addEventListener('touchstart', function (event) {
             if (event.touches.length === 2) {
                 // 双指：进入缩放，不当作点击
@@ -256,6 +331,8 @@
                 return;
             }
             var touch = event.touches[0];
+            longPressOrigin = { x: touch.clientX, y: touch.clientY };
+            armLongPress();
             touchStart = {
                 x: touch.clientX,
                 y: touch.clientY,
@@ -276,6 +353,17 @@
                 return;
             }
             var touch = event.touches[0];
+            if (longPressOrigin) {
+                var dx = touch.clientX - longPressOrigin.x;
+                var dy = touch.clientY - longPressOrigin.y;
+                if (dx * dx + dy * dy > 100) {
+                    if (longPressTimer) {
+                        clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                    longPressOrigin = null;
+                }
+            }
             if (Math.abs(touch.clientX - touchStart.x) > 8 || Math.abs(touch.clientY - touchStart.y) > 8) {
                 if (!touchStart.moved) {
                     // 一旦判定为滑动，就把编辑器的焦点摘掉并通知宿主收起输入法：
@@ -314,7 +402,8 @@
             }
             editor.focus();
             post('onFocus');
-        }, CAPTURE);
+                    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+}, CAPTURE);
 
         post('onReady');
     });

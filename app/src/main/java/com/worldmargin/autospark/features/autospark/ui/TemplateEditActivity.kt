@@ -2,27 +2,32 @@ package com.worldmargin.autospark.features.autospark.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
+import com.worldmargin.autospark.features.autospark.model.ConfigCodec
 import com.worldmargin.autospark.features.autospark.model.SyncMode
 import com.worldmargin.autospark.features.autospark.model.TemplateGroup
 import com.worldmargin.autospark.features.autospark.model.TemplateOps
+import com.worldmargin.autospark.features.autospark.model.TemplateVar
 import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
+import com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.asClickable
 import com.worldmargin.autospark.features.autospark.ui.UiKit.actionRow
-import com.worldmargin.autospark.features.autospark.ui.UiKit.button
 import com.worldmargin.autospark.features.autospark.ui.UiKit.column
 import com.worldmargin.autospark.features.autospark.ui.UiKit.divider
 import com.worldmargin.autospark.features.autospark.ui.UiKit.dp
+import com.worldmargin.autospark.features.autospark.ui.UiKit.icon
 import com.worldmargin.autospark.features.autospark.ui.UiKit.iconButton
 import com.worldmargin.autospark.features.autospark.ui.UiKit.padSystemBars
 import com.worldmargin.autospark.features.autospark.ui.UiKit.pasteButton
+import com.worldmargin.autospark.features.autospark.ui.UiKit.rounded
 import com.worldmargin.autospark.features.autospark.ui.UiKit.row
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
@@ -32,6 +37,9 @@ import java.util.UUID
 class TemplateEditActivity : Activity() {
     companion object {
         const val EXTRA_GROUP_ID = "group_id"
+
+        /** 变量页的请求码。 */
+        private const val REQUEST_VARIABLES = 0x72
     }
 
     private var groupId: String? = null
@@ -39,6 +47,10 @@ class TemplateEditActivity : Activity() {
     private lateinit var editor: SparkEditor
     private var existed = false
     private var originalBody = ""
+
+    /** 变量列表（在 [VariableListActivity] 里改，回来时整份替换）。 */
+    private var vars: List<TemplateVar> = emptyList()
+    private lateinit var varsSummary: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,13 +73,16 @@ class TemplateEditActivity : Activity() {
             }
         root.addView(nameField)
 
+        root.addView(variablesRow(group?.variables ?: emptyList()))
+
         root.addView(text("文案脚本（把要发送的文案赋给 " + SparkScriptEngine.RESULT_VAR + "）", 13f, UiKit.COLOR_DIM))
 
         editor =
             SparkEditors.create(this, config).apply {
                 // 新建模板默认空白：要文案就从模板页的内置模板「添加为我的模板」，或用下面的「补全」写
                 setText(group?.body ?: "")
-                applyTypes(config)
+                // 变量也声明进类型定义：脚本里 ctx.template. 能补全出变量名
+                applyTypes(config, config.templateVarsForGroup(groupId.orEmpty()))
             }
         root.addView(
             editor.view,
@@ -100,6 +115,75 @@ class TemplateEditActivity : Activity() {
         )
     }
 
+    /**
+     * 变量入口：**变量在单独一页里编辑**（[VariableListActivity]，一行一个：
+     * 左边名字、右边两三行高的小 Monaco），这里只显示个数与名字摘要。
+     *
+     * 表达式在发送时按定义顺序求值，能读 ctx，也能引用前面已经算出来的 ctx.template.xxx；
+     * 本模板没定义的变量会继续往父模板找。
+     */
+    private fun variablesRow(initial: List<TemplateVar>): android.view.View {
+        vars = initial
+        varsSummary = text("", 13f, UiKit.COLOR_DIM)
+        val entry =
+            row().apply {
+                background = rounded(UiKit.COLOR_CARD, 10)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply { topMargin = dp(10) }
+                addView(icon(UiKit.Icons.VARIABLE_GROUP, 18f, UiKit.COLOR_ACCENT).apply { setPadding(0, 0, dp(12), 0) })
+                addView(
+                    column().apply {
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        addView(text("变量", 16f, UiKit.COLOR_TEXT, bold = true))
+                        addView(varsSummary)
+                    },
+                )
+                addView(icon(UiKit.Icons.CHEVRON_RIGHT, 16f, UiKit.COLOR_DIM))
+            }
+        entry.asClickable { openVariables() }
+        refreshVarsSummary()
+        return entry
+    }
+
+    /** 摘要：个数 + 名字。 */
+    private fun refreshVarsSummary() {
+        varsSummary.text = if (vars.isEmpty()) "无" else "${vars.size} 个：" + vars.joinToString("、") { it.name }
+    }
+
+    /** 打开变量页（整份列表带过去，保存后整份带回来）。 */
+    private fun openVariables() {
+        startActivityForResult(
+            Intent(this, VariableListActivity::class.java)
+                .putExtra(VariableListActivity.EXTRA_VARS, ConfigCodec.encodeVars(vars).toString())
+                .putExtra(VariableListActivity.EXTRA_OWNER, nameField.text.toString().trim()),
+            REQUEST_VARIABLES,
+        )
+    }
+
+    /** 变量页的结果：整份替换（它自己负责合并重名 / 忽略空名字）。 */
+    @Deprecated("变量页回传")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?,
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_VARIABLES || resultCode != RESULT_OK || data == null) return
+        val raw = data.getStringExtra(VariableListActivity.RESULT_VARS) ?: return
+        vars =
+            runCatching { ConfigCodec.decodeVars(org.json.JSONArray(raw)) }
+                .getOrDefault(vars)
+        refreshVarsSummary()
+    }
+
+    /** 当前变量（变量页回来时已经合并好，这里直接用）。 */
+    private fun collectVariables(): List<TemplateVar> = vars
+
+
     /** 勾选挂在本模板上的宏（宏在模板脚本之后执行）。 */
     private fun pickMacros() {
         val id = groupId ?: return
@@ -113,9 +197,15 @@ class TemplateEditActivity : Activity() {
         // 预览与实际执行一致：自定义函数注入 → 模板 → 挂在本模板上的宏
         val program = config.composeProgram(body, config.macrosFor(listOfNotNull(groupId)))
         val sample = SparkPreview.sample(config)
+        // 变量用**当前正在编辑的**（还没保存也算），这样改完表达式直接能预览
+        val vars = collectVariables()
         val rendered =
-            runCatching { SparkScriptEngine.render(program, SparkPreview.variables(sample)) }
-                .getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
+            runCatching {
+                SparkScriptEngine.render(
+                    TemplateVarPrelude.of(vars) + program,
+                    SparkPreview.variables(sample),
+                )
+            }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
         AlertDialog
             .Builder(this)
             .setTitle("预览（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
@@ -135,7 +225,7 @@ class TemplateEditActivity : Activity() {
             val bodyChanged = body != originalBody
             ConfigStore.update(this) { config ->
                 val old = config.group(groupId)
-                val updated = old?.copy(name = name, body = body, updatedAt = System.currentTimeMillis())
+                val updated = old?.copy(name = name, body = body, updatedAt = System.currentTimeMillis(), variables = collectVariables())
                 config.copy(groups = config.groups.map { if (it.id == groupId) updated!! else it })
             }
             val group = ConfigStore.load(this).group(groupId)
@@ -147,7 +237,14 @@ class TemplateEditActivity : Activity() {
         } else {
             val id = UUID.randomUUID().toString()
             ConfigStore.update(this) { config ->
-                val group = TemplateGroup(id = id, name = name, body = body, updatedAt = System.currentTimeMillis())
+                val group =
+            TemplateGroup(
+                id = id,
+                name = name,
+                body = body,
+                updatedAt = System.currentTimeMillis(),
+                variables = collectVariables(),
+            )
                 config.copy(groups = config.groups + group)
             }
             finish()
@@ -267,7 +364,14 @@ class TemplateEditActivity : Activity() {
                         val current = list.firstOrNull { it.conversationId == snapshot.conversationId }
                         if (checked[index]) {
                             if (current?.inheritFrom != id) {
-                                val next = TemplateOps.inheritFrom(group, snapshot.conversationId, current?.autoSync ?: false, now)
+                                val next =
+                                    TemplateOps.inheritFrom(
+                                        group,
+                                        snapshot.conversationId,
+                                        current?.autoSync ?: false,
+                                        now,
+                                        variables = current?.variables.orEmpty(),
+                                    )
                                 list =
                                     if (current == null) {
                                         list + next
@@ -276,7 +380,13 @@ class TemplateEditActivity : Activity() {
                                     }
                             }
                         } else if (current != null && current.inheritFrom == id) {
-                            val next = TemplateOps.blank(current.conversationId, current.body, now)
+                            val next =
+                                TemplateOps.blank(
+                                    current.conversationId,
+                                    current.body,
+                                    now,
+                                    variables = current.variables,
+                                )
                             list = list.map { if (it.conversationId == snapshot.conversationId) next else it }
                         }
                     }
@@ -291,13 +401,18 @@ class TemplateEditActivity : Activity() {
         AlertDialog
             .Builder(this)
             .setTitle("删除模板？")
-            .setMessage("挂在该模板下的会话模板会变为「空白（自定义）」，内容保留。")
+            .setMessage("挂在该模板下的会话会退回「空白模板」，内容保留。")
             .setPositiveButton("删除") { _, _ ->
                 ConfigStore.update(this) { config ->
                     val conversations =
                         config.conversations.map { child ->
                             if (child.inheritFrom == groupId) {
-                                TemplateOps.blank(child.conversationId, child.body, System.currentTimeMillis())
+                                TemplateOps.blank(
+                                    child.conversationId,
+                                    child.body,
+                                    System.currentTimeMillis(),
+                                    variables = child.variables,
+                                )
                             } else {
                                 child
                             }

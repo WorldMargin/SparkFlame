@@ -116,6 +116,12 @@ class SparkSettingsActivity : Activity() {
     /** 待写入文件的配置 JSON（导出走系统文件选择，回来才写）。 */
     private var pendingExport = ""
 
+    /** 从派生项长按进来时，变量页回来后要写回哪个自定义模板。 */
+    private var pendingVarsGroup: String? = null
+
+    /** 同上，要写回哪个会话自己的变量。 */
+    private var pendingVarsConversation: String? = null
+
     /** 导出页勾选的条目；[exportExcluded] 记录用户手动取消过的（依赖自动勾选不再加回来）。 */
     private var exportSelection = TransferSelection()
     private var exportExcluded = emptySet<String>()
@@ -229,14 +235,54 @@ class SparkSettingsActivity : Activity() {
         super.onBackPressed()
     }
 
-    /** 导出/导入配置的文件选择回调。 */
-    @Deprecated("文件选择结果")
+    /** 导出/导入配置、派生项变量页的回调。 */
+    @Deprecated("文件选择 / 变量页结果")
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
         data: Intent?,
     ) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_GROUP_VARS || requestCode == REQUEST_CONVERSATION_VARS) {
+            val groupId = pendingVarsGroup
+            val conversationId = pendingVarsConversation
+            pendingVarsGroup = null
+            pendingVarsConversation = null
+            if (resultCode != RESULT_OK || data == null) return
+            val raw = data.getStringExtra(VariableListActivity.RESULT_VARS) ?: return
+            val vars =
+                runCatching { ConfigCodec.decodeVars(org.json.JSONArray(raw)) }
+                    .getOrDefault(emptyList())
+            val now = System.currentTimeMillis()
+            when {
+                groupId != null ->
+                    ConfigStore.update(this) { config ->
+                        config.copy(
+                            groups =
+                                config.groups.map { group ->
+                                    if (group.id == groupId) group.copy(variables = vars, updatedAt = now) else group
+                                },
+                        )
+                    }
+                conversationId != null ->
+                    ConfigStore.update(this) { config ->
+                        config.copy(
+                            conversations =
+                                config.conversations.map { template ->
+                                    if (template.conversationId == conversationId) {
+                                        template.copy(variables = vars, updatedAt = now)
+                                    } else {
+                                        template
+                                    }
+                                },
+                        )
+                    }
+                else -> return
+            }
+            Toast.makeText(this, "已保存 ${vars.size} 个变量", Toast.LENGTH_SHORT).show()
+            render()
+            return
+        }
         if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         when (requestCode) {
@@ -882,9 +928,10 @@ class SparkSettingsActivity : Activity() {
         val template = config.conversation(id)
         val sourceText =
             when {
-                template == null -> "未选模板（不发）"
-                template.inheritFrom == null -> "空白（自定义）"
-                else -> "继承：" + (config.group(template.inheritFrom)?.name ?: "(已删除的模板)")
+                // 没建模板 = 还没写文案；空白模板 = 不用模板、自己写（两者都会照常发送）
+                template == null -> "未写文案"
+                template.inheritFrom == null -> "空白模板"
+                else -> "继承：" + (config.templateName(template.inheritFrom) ?: "(已删除的模板)")
             }
         val marker =
             when (id) {
@@ -1000,7 +1047,7 @@ class SparkSettingsActivity : Activity() {
      * （继承自它的会话）。
      *
      * - 段标题也可折叠：内置模板默认折叠，免得内置项一多就把页面撑满。
-     * - 「选会话继承」= 跟随该模板（父模板改了会同步）；「克隆到会话」= 只复制内容、内容固定。
+     * - 「选会话继承」= 跟随该模板（父模板改了会同步）；「克隆到会话」= 只复制内容，之后跟空白模板。
      */
     private fun buildTemplatesPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(0), dp(16), dp(16)) }
@@ -1038,7 +1085,7 @@ class SparkSettingsActivity : Activity() {
                         )
                         addView(text(builtin.desc, 13f, COLOR_DIM))
                         if (builtin.body.isNotBlank()) {
-                            addView(text(previewBody(config, builtin.body, index), 13f, COLOR_DIM))
+                            addView(text(previewBody(config, builtin.body, index, config.templateVarsForGroup(id)), 13f, COLOR_DIM))
                         }
                         val extra =
                             column().apply {
@@ -1090,7 +1137,7 @@ class SparkSettingsActivity : Activity() {
                                     if (derived > 0) addView(text("派生 $derived", 12f, COLOR_ACCENT))
                                 },
                             )
-                            addView(text(previewGroup(config, group, index), 13f, COLOR_DIM))
+                            addView(text(previewGroup(config, group, index, config.templateVarsForGroup(group.id)), 13f, COLOR_DIM))
                             val extra =
                                 column().apply {
                                     visibility = if (expanded) View.VISIBLE else View.GONE
@@ -1200,18 +1247,119 @@ class SparkSettingsActivity : Activity() {
                             )
                             when {
                                 member.modified -> addView(text("已本地修改（未跟随父模板）", 12f, COLOR_WARN))
-                                member.inheritFrom == null -> addView(text("内容固定", 12f, COLOR_DIM))
+                                member.inheritFrom == null -> addView(text("空白模板", 12f, COLOR_DIM))
+                                member.inheritFrom == SparkConfig.BUILTIN_BLANK -> addView(text("空白模板", 12f, COLOR_DIM))
                                 else -> addView(text("跟随父模板", 12f, COLOR_DIM))
+                            }
+                            // 这个会话自己定义的变量（同名会覆盖父模板的）
+                            if (member.variables.isNotEmpty()) {
+                                addView(text("变量 ${member.variables.size}", 12f, COLOR_ACCENT))
                             }
                         },
                     )
                     addView(icon(UiKit.Icons.CHEVRON_RIGHT, 13f, COLOR_DIM))
                     isClickable = true
                     setOnClickListener { openTemplateOrConversation(id, isTemplate) }
+                    // 长按：编辑 / 编辑它用的变量（变量在父模板上，所以这里能直接改到父模板）
+                    setOnLongClickListener {
+                        showDerivedActions(id, isTemplate, member.inheritFrom)
+                        true
+                    }
                 },
             )
             if (isTemplate) buildChildren(config, id, body, depth + 1)
         }
+    }
+
+    /**
+     * 长按派生项的菜单：「更改模板」进去换/编辑模板，「编辑模板变量」编辑**这个派生项自己的变量**。
+     *
+     * 会话的变量和父模板的变量是两份数据：会话那份在生效时排在父模板之后（同名覆盖），
+     * 改这里**不会**动父模板、也不会影响别的派生项。
+     */
+    private fun showDerivedActions(
+        id: String,
+        isTemplate: Boolean,
+        inheritFrom: String?,
+    ) {
+        val config = ConfigStore.load(this)
+        val label =
+            if (isTemplate) {
+                config.group(id)?.name.orEmpty().ifBlank { "(未命名模板)" }
+            } else {
+                config.conversationLabel(id)
+            }
+        val ownVars =
+            if (isTemplate) {
+                config.group(id)?.variables.orEmpty()
+            } else {
+                config.conversation(id)?.variables.orEmpty()
+            }
+        val items =
+            arrayOf(
+                "更改模板",
+                if (ownVars.isEmpty()) "编辑模板变量" else "编辑模板变量（${ownVars.size} 个）",
+            )
+        AlertDialog
+            .Builder(this)
+            .setTitle("「$label」")
+            .setItems(items) { _, which ->
+                if (which == 0) {
+                    openTemplateOrConversation(id, isTemplate)
+                } else if (isTemplate) {
+                    openGroupVariables(id, label)
+                } else {
+                    openConversationVariables(id, label, inheritFrom)
+                }
+            }.show()
+    }
+
+    /**
+     * 打开**这个会话自己的**变量页（父模板的变量只带过去做提示与补全）。
+     *
+     * 保存后写回 [com.worldmargin.autospark.features.autospark.model.ConversationTemplate.variables]，
+     * **不动父模板**—— 它们是两份数据，同名时会话的覆盖父模板的。
+     */
+    private fun openConversationVariables(
+        conversationId: String,
+        label: String,
+        inheritFrom: String?,
+    ) {
+        val config = ConfigStore.load(this)
+        val template = config.conversation(conversationId)
+        val inherited = config.templateVarsForGroup(inheritFrom.orEmpty())
+        pendingVarsConversation = conversationId
+        runCatching {
+            startActivityForResult(
+                Intent(this, VariableListActivity::class.java)
+                    .putExtra(VariableListActivity.EXTRA_VARS, ConfigCodec.encodeVars(template?.variables.orEmpty()).toString())
+                    .putExtra(VariableListActivity.EXTRA_INHERITED, ConfigCodec.encodeVars(inherited).toString())
+                    .putExtra(VariableListActivity.EXTRA_PARENT_ID, inheritFrom)
+                    .putExtra(VariableListActivity.EXTRA_OWNER, label),
+                REQUEST_CONVERSATION_VARS,
+            )
+        }.onFailure { Toast.makeText(this, "打不开变量页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 打开某个自定义模板自己的变量页（只有模板本身的变量）。 */
+    private fun openGroupVariables(
+        groupId: String,
+        label: String,
+    ) {
+        val group = ConfigStore.load(this).group(groupId)
+        if (group == null) {
+            Toast.makeText(this, "模板已被删除", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingVarsGroup = groupId
+        runCatching {
+            startActivityForResult(
+                Intent(this, VariableListActivity::class.java)
+                    .putExtra(VariableListActivity.EXTRA_VARS, ConfigCodec.encodeVars(group.variables).toString())
+                    .putExtra(VariableListActivity.EXTRA_OWNER, label),
+                REQUEST_GROUP_VARS,
+            )
+        }.onFailure { Toast.makeText(this, "打不开变量页", Toast.LENGTH_SHORT).show() }
     }
 
     /** 点派生项时跳到对应编辑页：子模板 → 模板编辑页，会话 → 会话文案编辑页。 */
@@ -1234,7 +1382,7 @@ class SparkSettingsActivity : Activity() {
     /** 把内置模板复制成一份可编辑的自定义模板。 */
     private fun addBuiltinAsTemplate(builtin: BuiltinTemplate) {
         if (builtin.body.isBlank()) {
-            Toast.makeText(this, "空白模板不用添加，未选模板就是不发送", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "空白模板不用复制，直接给会话选它就能自己写", Toast.LENGTH_SHORT).show()
             return
         }
         ConfigStore.update(this) { config ->
@@ -1253,7 +1401,7 @@ class SparkSettingsActivity : Activity() {
         render()
     }
 
-    /** 把某个模板的内容**克隆**给选中的会话（内容固定，不跟随父模板）。 */
+    /** 把某个模板的内容**克隆**给选中的会话（只复制内容，之后跟空白模板）。 */
     private fun cloneBodyToConversations(
         name: String,
         body: String,
@@ -1266,7 +1414,7 @@ class SparkSettingsActivity : Activity() {
         val checked = BooleanArray(snapshots.size)
         AlertDialog
             .Builder(this)
-            .setTitle("克隆「$name」到会话（内容固定）")
+            .setTitle("克隆「$name」到会话")
             .setMultiChoiceItems(snapshots.map { it.displayName.ifBlank { "(无名)" } }.toTypedArray(), checked) { _, which, isChecked ->
                 checked[which] = isChecked
             }.setPositiveButton("克隆") { _, _ ->
@@ -1284,6 +1432,8 @@ class SparkSettingsActivity : Activity() {
                                 autoSync = false,
                                 now = now,
                                 selectedAt = current?.selectedAt ?: 0L,
+                                // 会话自己的变量不能被克隆冲掉
+                                variables = current?.variables.orEmpty(),
                             )
                         list =
                             if (current == null) {
@@ -1303,7 +1453,7 @@ class SparkSettingsActivity : Activity() {
     /**
      * 批量**继承**：把选中的会话挂到某个一级模板下（内置模板也行）。
      *
-     * 继承 = 跟随父模板：父模板内容改了可以同步过来；取消勾选则退回「空白（不发）」但保留已写内容。
+     * 继承 = 跟随父模板：父模板内容改了可以同步过来；取消勾选则退回「空白模板」（自己写）并保留已写内容。
      */
     private fun pickMembers(
         templateId: String,
@@ -1337,9 +1487,17 @@ class SparkSettingsActivity : Activity() {
                                         autoSync = current?.autoSync ?: false,
                                         now = now,
                                         selectedAt = current?.selectedAt ?: 0L,
+                                        // 会话自己的变量不跟着继承关系走
+                                        variables = current?.variables.orEmpty(),
                                     )
                                 !checked[index] && current?.inheritFrom == templateId ->
-                                    TemplateOps.blank(snapshot.conversationId, current.body, now, current.selectedAt)
+                                    TemplateOps.blank(
+                                        snapshot.conversationId,
+                                        current.body,
+                                        now,
+                                        current.selectedAt,
+                                        current.variables,
+                                    )
                                 else -> null
                             }
                         if (next != null) {
@@ -1778,23 +1936,26 @@ class SparkSettingsActivity : Activity() {
         config: SparkConfig,
         body: String,
         sampleIndex: Int,
-    ): String = preview(config, config.composeProgram(body), sampleIndex)
+        vars: List<com.worldmargin.autospark.features.autospark.model.TemplateVar> = emptyList(),
+    ): String = preview(config, config.composeProgram(body), sampleIndex, vars)
 
     /** 预览某个通用模板：函数注入 + 模板 + 挂在它上面的宏。 */
     private fun previewGroup(
         config: SparkConfig,
         group: TemplateGroup,
         sampleIndex: Int,
+        vars: List<com.worldmargin.autospark.features.autospark.model.TemplateVar> = emptyList(),
     ): String =
-        preview(config, config.composeProgram(group.body, config.macrosFor(listOf(group.id))), sampleIndex)
+        preview(config, config.composeProgram(group.body, config.macrosFor(listOf(group.id))), sampleIndex, vars)
 
     private fun preview(
         config: SparkConfig,
         program: String,
         sampleIndex: Int = 0,
+        vars: List<com.worldmargin.autospark.features.autospark.model.TemplateVar> = emptyList(),
     ): String {
         val sample = SparkPreview.variables(SparkPreview.sampleAt(config, sampleIndex))
-        return runCatching { SparkScriptEngine.render(program, sample) }
+        return runCatching { SparkScriptEngine.render(com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(vars) + program, sample) }
             .getOrElse { "（预览失败：" + (it.message ?: it.toString()) + "）" }
     }
 
@@ -2097,6 +2258,12 @@ class SparkSettingsActivity : Activity() {
         /** 配置导出 / 导入的文件选择请求码。 */
         const val REQUEST_EXPORT_CONFIG = 0x61
         const val REQUEST_IMPORT_CONFIG = 0x62
+
+        /** 派生项长按 → 编辑父模板变量。 */
+        const val REQUEST_GROUP_VARS = 0x63
+
+        /** 派生项长按 → 编辑这个会话自己的变量。 */
+        const val REQUEST_CONVERSATION_VARS = 0x64
 
         /** 抖音火苗状态码（见 ConversationSnapshot 注释）。 */
         const val SPARK_DONE = 1

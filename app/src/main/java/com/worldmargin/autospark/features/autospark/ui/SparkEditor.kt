@@ -7,6 +7,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -16,7 +19,9 @@ import android.widget.FrameLayout
 import androidx.webkit.WebViewAssetLoader
 import com.worldmargin.autospark.core.ModLog
 import com.worldmargin.autospark.features.autospark.model.SparkConfig
+import com.worldmargin.autospark.features.autospark.model.TemplateVar
 import com.worldmargin.autospark.features.autospark.script.SparkTypeScript
+import com.worldmargin.autospark.features.autospark.ui.UiKit.icon
 import io.github.rosemoe.sora.widget.CodeEditor
 import org.json.JSONObject
 
@@ -32,8 +37,14 @@ interface SparkEditor {
 
     /**
      * 注入上下文类型声明：Monaco 用它给出 `ctx` 与自定义函数的补全与文档。
+     *
+     * [templateVars] 是当前模板已定义的变量，会被声明进 `ctx.template.<名字>`，
+     * 于是脚本里写 `ctx.template.` 能补全出变量名（变量表达式页里也能引用前面的变量）。
      */
-    fun applyTypes(config: SparkConfig)
+    fun applyTypes(
+        config: SparkConfig,
+        templateVars: List<TemplateVar> = emptyList(),
+    )
 
     /** 主动唤起补全。 */
     fun showCompletion()
@@ -43,6 +54,21 @@ interface SparkEditor {
 
     /** 快速格式化：清掉不可见字符 / 智能引号 / Markdown 围栏，并尽量重排缩进。 */
     fun format()
+
+    /**
+     * 紧凑模式：给「变量」页那种两三行高的小输入框用（关行号、收内边距）。
+     *
+     * 高度不由网页自己决定 —— 调用方按内容行数算好高度设给 `view`，
+     * 所以这里只把「看起来像个小输入框」的部分调好。
+     */
+    fun setCompact(compact: Boolean) = Unit
+
+    /**
+     * 观察内容变化（每次键入都会回调，用来给紧凑模式的小编辑器算高度）。
+     *
+     * 原生编辑器不实现（它有自己的滚动条），回调不触发也不影响使用。
+     */
+    fun observeTextChange(onChange: (String) -> Unit) = Unit
 
     /** 页面销毁时释放资源（WebView 需要显式销毁）。 */
     fun release()
@@ -76,7 +102,11 @@ class SoraSparkEditor(
         editor.setText(value)
     }
 
-    override fun applyTypes(config: SparkConfig) = Unit
+    override fun applyTypes(
+        config: SparkConfig,
+        templateVars: List<TemplateVar>,
+    ) = Unit
+
 
     override fun showCompletion() {
         editor.showSparkCompletion()
@@ -121,6 +151,10 @@ class MonacoSparkEditor(
     private var released = false
     private var pendingText: String? = null
     private var pendingTypes: String? = null
+    private var pendingCompact: Boolean? = null
+
+    /** 内容变化回调（紧凑模式下用来重算高度）。 */
+    private var changed: ((String) -> Unit)? = null
 
     init {
         val loader =
@@ -171,8 +205,11 @@ class MonacoSparkEditor(
         }
     }
 
-    override fun applyTypes(config: SparkConfig) {
-        val dts = SparkTypeScript.dts(config)
+    override fun applyTypes(
+        config: SparkConfig,
+        templateVars: List<TemplateVar>,
+    ) {
+        val dts = SparkTypeScript.dts(config, templateVars)
         if (ready) {
             eval("window.spark && window.spark.setTypes(" + JSONObject.quote(dts) + ")")
         } else {
@@ -193,6 +230,18 @@ class MonacoSparkEditor(
 
     override fun format() {
         eval("window.spark && window.spark.format()")
+    }
+
+    override fun setCompact(compact: Boolean) {
+        if (ready) {
+            eval("window.spark && window.spark.setCompact(" + (if (compact) "true" else "false") + ")")
+        } else {
+            pendingCompact = compact
+        }
+    }
+
+    override fun observeTextChange(onChange: (String) -> Unit) {
+        changed = onChange
     }
 
     /** 拉起软键盘（Monaco 的输入框拿到焦点后调用）。 */
@@ -219,6 +268,126 @@ class MonacoSparkEditor(
         }
     }
 
+    /** 把系统剪贴板的内容插到 Monaco 光标处（「粘贴」按钮与长按菜单共用）。 */
+    private fun pasteFromClipboard() {
+        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(activity)?.toString()
+        if (text.isNullOrEmpty()) {
+            Toast.makeText(activity, "剪贴板是空的", Toast.LENGTH_SHORT).show()
+        } else {
+            eval("window.spark && window.spark.insertText(" + JSONObject.quote(text) + ")")
+        }
+    }
+
+    /**
+     * 长按菜单：悬浮在**编辑器上方**的一个小圆角浮层（只画图标）。
+     *
+     * 四个动作：全选 / 复制 / 粘贴 / 撤销，做完就自己消失；点别处也会消失。
+     * 不画在网页里、也不居中弹窗（两者都会把两三行高的小编辑器整块盖住），
+     * 上方没地方就浮在编辑器下方，都不行才贴底部。
+     */
+    private fun showLongPressMenu() {
+        if (released) return
+        val root = activity.window?.decorView ?: return
+        val density = activity.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+
+        var popup: android.widget.PopupWindow? = null
+        val pill =
+            android.widget.LinearLayout(activity).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                background =
+                    android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                        cornerRadius = dp(22).toFloat()
+                        setColor(0xF2202124.toInt())
+                    }
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+            }
+        val actions =
+            listOf(
+                UiKit.Icons.SELECTION to ("全选" to { eval("window.spark && window.spark.selectAll()") }),
+                UiKit.Icons.COPY to ("复制" to { eval("window.spark && window.spark.copySelection()") }),
+                UiKit.Icons.CLIPPY to ("粘贴" to { pasteFromClipboard() }),
+                UiKit.Icons.DISCARD to ("撤销" to { eval("window.spark && window.spark.undo()") }),
+            )
+        actions.forEach { (glyph, entry) ->
+            val (label, action) = entry
+            val button =
+                activity.icon(glyph, 19f, 0xFFFFFFFF.toInt()).apply {
+                    gravity = android.view.Gravity.CENTER
+                    layoutParams = android.widget.LinearLayout.LayoutParams(dp(46), dp(46))
+                    contentDescription = label
+                    isClickable = true
+                    // 按下反馈：圆角水波
+                    background =
+                        android.graphics.drawable.RippleDrawable(
+                            android.content.res.ColorStateList.valueOf(0x33FFFFFF),
+                            null,
+                            android.graphics.drawable.GradientDrawable().apply {
+                                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                                cornerRadius = dp(20).toFloat()
+                                setColor(0xFFFFFFFF.toInt())
+                            },
+                        )
+                    setOnClickListener {
+                        popup?.dismiss()
+                        action()
+                    }
+                }
+            pill.addView(button)
+        }
+
+        pill.measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED),
+            android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED),
+        )
+        val width = pill.measuredWidth
+        val height = pill.measuredHeight
+        val metrics = activity.resources.displayMetrics
+        val insets =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                root.rootWindowInsets?.getInsets(android.view.WindowInsets.Type.systemBars())
+            } else {
+                null
+            }
+        val statusTop = insets?.top ?: 0
+        val navBottom = insets?.bottom ?: 0
+        val margin = dp(8)
+        val location = IntArray(2)
+        web.getLocationOnScreen(location)
+        val anchorWidth = if (web.width > 0) web.width else metrics.widthPixels
+        val anchorHeight = if (web.height > 0) web.height else dp(60)
+        val x =
+            (location[0] + (anchorWidth - width) / 2)
+                .coerceIn(margin, (metrics.widthPixels - width - margin).coerceAtLeast(margin))
+        val above = location[1] - height - dp(6)
+        val below = location[1] + anchorHeight + dp(6)
+        val aboveFits = above >= statusTop + dp(4)
+        val belowFits = below + height <= metrics.heightPixels - navBottom - dp(4)
+        // 编辑器在上半屏：浮在它下面；在下半屏：浮在它上面（都不挡编辑区）
+        val editorInUpperHalf = location[1] + anchorHeight / 2 < metrics.heightPixels / 2
+        val y =
+            when {
+                editorInUpperHalf && belowFits -> below
+                aboveFits -> above
+                belowFits -> below
+                else -> metrics.heightPixels - navBottom - height - margin
+            }
+        val window =
+            android.widget.PopupWindow(
+                pill,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                true,
+            ).apply {
+                isOutsideTouchable = true
+                elevation = 10f * density
+            }
+        popup = window
+        window.showAtLocation(root, android.view.Gravity.NO_GRAVITY, x, y)
+    }
+
     override fun release() {
         released = true
         runCatching {
@@ -239,6 +408,8 @@ class MonacoSparkEditor(
         pendingText = null
         pendingTypes?.let { dts -> eval("window.spark && window.spark.setTypes(" + JSONObject.quote(dts) + ")") }
         pendingTypes = null
+        pendingCompact?.let { setCompact(it) }
+        pendingCompact = null
     }
 
     /** 页面回调（JS 线程），统一切回主线程处理。 */
@@ -253,10 +424,40 @@ class MonacoSparkEditor(
 
         @JavascriptInterface
         fun onChange(text: String) {
-            container.post { cached = text }
+            container.post {
+                cached = text
+                changed?.invoke(text)
+            }
         }
 
         /** Monaco 的输入框拿到焦点：这时才拉起输入法。 */
+        /** 复制：把选中的文字（没选就是全文）写进系统剪贴板。 */
+        @JavascriptInterface
+        fun onCopy(text: String) {
+            activity.runOnUiThread {
+                val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("星火燎原", text))
+                Toast.makeText(activity, "已复制 " + text.length + " 字", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        /** 粘贴：读系统剪贴板再回填到 Monaco 光标处（WebView 里读剪贴板不稳，走原生）。 */
+        @JavascriptInterface
+        fun onPasteRequest() {
+            activity.runOnUiThread { pasteFromClipboard() }
+        }
+
+        /**
+         * 长按：弹**原生**菜单（全选 / 复制 / 粘贴 / 撤销）。
+         *
+         * 原来这套菜单画在网页里，编辑器只有两三行高时（变量页）会把整块编辑区盖住，
+         * 所以改成 Kotlin 侧 `AlertDialog`，动作再回灌给网页。
+         */
+        @JavascriptInterface
+        fun onMenuRequest() {
+            activity.runOnUiThread { showLongPressMenu() }
+        }
+
         @JavascriptInterface
         fun onFocus() {
             container.post {

@@ -66,6 +66,12 @@ object UiKit {
         const val CLONE = "\uea78"
         const val TARGET = "\uebf8"
         const val CHECKLIST = "\ueab3"
+
+        /** 全选（list-selection）：长按工具条上「全选」用它。 */
+        const val SELECTION = "\ueb85"
+
+        /** 模板变量（variable-group）：变量入口用它。 */
+        const val VARIABLE_GROUP = "\uebb8"
         const val PREVIEW = "\ueb2f"
         const val ZAP = "\uea86"
         const val MOVE = "\ueb22"

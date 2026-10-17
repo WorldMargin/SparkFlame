@@ -90,6 +90,8 @@ class ModuleMain : XposedModule() {
                     .onFailure { ModLog.e("刷新会话广播注册失败", it) }
                 runCatching { AutoSparkBridge.scheduleOnAppStart() }
                     .onFailure { ModLog.e("续火花任务安排失败", it) }
+                runCatching { (chain.thisObject as? Application)?.let { AutoSparkBridge.startDayWatcher(it) } }
+                    .onFailure { ModLog.e("跨天值守挂载失败", it) }
             }
             chain.proceed()
         }

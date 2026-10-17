@@ -2,6 +2,7 @@ package com.worldmargin.autospark.features.autospark.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -10,11 +11,14 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import com.worldmargin.autospark.features.autospark.bridge.AutoSparkBridge
 import com.worldmargin.autospark.features.autospark.model.BuiltinTemplates
+import com.worldmargin.autospark.features.autospark.model.ConfigCodec
 import com.worldmargin.autospark.features.autospark.model.ConversationTemplate
 import com.worldmargin.autospark.features.autospark.model.SparkConfig
 import com.worldmargin.autospark.features.autospark.model.TemplateOps
 import com.worldmargin.autospark.features.autospark.model.TemplateSource
+import com.worldmargin.autospark.features.autospark.model.TemplateVar
 import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
+import com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_ACCENT
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_CARD
@@ -41,10 +45,13 @@ import com.worldmargin.autospark.features.autospark.ui.UiKit.spacer
 import com.worldmargin.autospark.features.autospark.ui.UiKit.text
 import com.worldmargin.autospark.features.autospark.ui.UiKit.titleBar
 
-/** 编辑单个会话的文案：继承来源 / 自动同步 / 本地内容 / 重置。 */
+/** 编辑单个会话的文案：继承来源 / 自动同步 / 本地内容 / 重置 / **这个会话自己的变量**。 */
 class ConversationEditActivity : Activity() {
     companion object {
         const val EXTRA_CONVERSATION_ID = "conversation_id"
+
+        /** 变量页的请求码。 */
+        private const val REQUEST_VARIABLES = 0x74
     }
 
     private lateinit var conversationId: String
@@ -79,7 +86,8 @@ class ConversationEditActivity : Activity() {
         editor =
             SparkEditors.create(this, config).apply {
                 setText(template?.body.orEmpty())
-                applyTypes(config)
+                // 继承来的模板变量也声明进类型定义：脚本里 ctx.template. 能补全出变量名
+                applyTypes(config, config.templateVarsFor(conversationId))
             }
         root.addView(
             editor.view,
@@ -129,16 +137,24 @@ class ConversationEditActivity : Activity() {
     }
 
     /**
-     * 继承来源页：按分类列出可继承的模板 —— 空白 / 内置模板 / 自定义模板，
-     * 每个一级模板都能展开看它的**派生模板**；另有「内容固定」的会话模板可以克隆。
+     * 继承来源页：按分类列出可继承的模板 —— 空白模板 / 内置模板 / 自定义模板，
+     * 每个一级模板都能展开看它的**派生模板**；另有别的会话模板可以克隆。
+     *
+     * 「空白模板」和别的模板一样是**跟随**关系，只是父模板内容是空的（自己写）。
      */
     private fun buildSourcePage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
 
         body.addView(
             card().apply {
-                addView(text("不继承", 15f, COLOR_TEXT, bold = true))
-                addView(sourceRow("空白（不发）", "清掉继承关系，保留内容", null))
+                addView(text("空白", 15f, COLOR_TEXT, bold = true))
+                addView(
+                    sourceRow(
+                        BuiltinTemplates.BLANK.name,
+                        "不用模板，自己写",
+                        TemplateSource(SparkConfig.BUILTIN_BLANK, BuiltinTemplates.BLANK.name, ""),
+                    ),
+                )
             },
         )
         body.addView(
@@ -163,14 +179,14 @@ class ConversationEditActivity : Activity() {
             },
         )
 
-        val standalone = config.conversations.filter { it.conversationId != conversationId && it.body.isNotBlank() && it.inheritFrom == null }
+        val standalone = config.conversations.filter { it.conversationId != conversationId && it.body.isNotBlank() && it.inheritFrom == SparkConfig.BUILTIN_BLANK }
         if (standalone.isNotEmpty()) {
-            body.addView(sectionTitle("内容固定的会话模板（克隆）"))
+            body.addView(sectionTitle("自写的会话模板（克隆）"))
             standalone.forEach { child ->
                 body.addView(
                     sourceRow(
                         "克隆：" + config.conversationLabel(child.conversationId),
-                        "复制它的内容，之后不跟随任何模板",
+                        "复制它的内容，之后跟空白模板",
                         TemplateSource(null, "克隆", child.body),
                     ),
                 )
@@ -225,7 +241,7 @@ class ConversationEditActivity : Activity() {
                 )
             }
             derived.forEach { child ->
-                val parentName = config.templateName(child.inheritFrom) ?: "内容固定"
+                val parentName = config.templateName(child.inheritFrom) ?: "空白模板"
                 parent.addView(
                     sourceRow(
                         "└ " + config.conversationLabel(child.conversationId),
@@ -258,17 +274,40 @@ class ConversationEditActivity : Activity() {
             setOnClickListener { applySource(source) }
         }
 
-    /** 选中某个来源：跟随它的父模板并复制它的内容；[source] 为 null 则是清掉继承。 */
+    /** 选中某个来源：跟随它的父模板并复制它的内容；空白模板不覆盖已写的文案。 */
     private fun applySource(source: TemplateSource?) {
         val now = System.currentTimeMillis()
         ConfigStore.update(this) { cfg ->
             val current = cfg.conversation(conversationId)
             val selectedAt = current?.selectedAt ?: if (conversationId in cfg.selectedIds()) now else 0L
             val next =
-                if (source == null) {
-                    TemplateOps.blank(conversationId, "", now, selectedAt)
-                } else {
-                    TemplateOps.fromSource(conversationId, source, autoSync, now, selectedAt)
+                when {
+                    source == null ->
+                        TemplateOps.blank(
+                            conversationId,
+                            "",
+                            now,
+                            selectedAt,
+                            current?.variables.orEmpty(),
+                        )
+                    // 空白模板 = 自己写：保留已有内容，只把「跟随谁」换成空白模板
+                    source.parentId == SparkConfig.BUILTIN_BLANK ->
+                        TemplateOps.blank(
+                            conversationId,
+                            current?.body ?: editor.text,
+                            now,
+                            selectedAt,
+                            current?.variables.orEmpty(),
+                        )
+                    else ->
+                        TemplateOps.fromSource(
+                            conversationId,
+                            source,
+                            autoSync,
+                            now,
+                            selectedAt,
+                            current?.variables.orEmpty(),
+                        )
                 }
             if (current == null) {
                 cfg.copy(conversations = cfg.conversations + next)
@@ -289,19 +328,21 @@ class ConversationEditActivity : Activity() {
         // 顶部压成一行：继承来源 + 自动同步勾选 + 宏数量，把高度留给编辑区
         val ownMacros = config.macrosFor(listOf(conversationId))
         val parentMacros = template?.inheritFrom?.let { config.macrosFor(listOf(it)) }.orEmpty()
+        val following = template?.inheritFrom
         info.addView(
             row().apply {
                 addView(
                     text(
                         when {
-                            template == null -> "未选模板（不发）"
-                            template.inheritFrom == null -> "内容固定（克隆）"
-                            config.templateName(template.inheritFrom) != null -> config.templateName(template.inheritFrom)!!
-                            // 父模板被清理掉了：内容还在，当成「内容固定」
-                            else -> "内容固定（原父模板已不存在）"
+                            // 尚未建模板：等同于「不用模板、自己写」
+                            template == null -> BuiltinTemplates.BLANK.name
+                            following == null -> "空白模板"
+                            config.templateName(following) != null -> config.templateName(following)!!
+                            // 父模板被清理掉了：内容还在，当成空白模板
+                            else -> "空白模板"
                         },
                         14f,
-                        if (template == null) COLOR_WARN else COLOR_ACCENT,
+                        COLOR_ACCENT,
                         bold = true,
                     ),
                 )
@@ -316,6 +357,8 @@ class ConversationEditActivity : Activity() {
                     },
                 )
                 if (template?.modified == true) addView(text("　已本地修改", 12f, COLOR_WARN))
+                val ownVars = template?.variables.orEmpty()
+                if (ownVars.isNotEmpty()) addView(text("　变量 ${ownVars.size}", 12f, COLOR_ACCENT))
                 addView(spacer())
                 addView(
                     text(
@@ -328,8 +371,9 @@ class ConversationEditActivity : Activity() {
                     CheckBox(this@ConversationEditActivity).apply {
                         text = "自动同步"
                         textSize = 12f
-                        isEnabled = template?.inheritFrom != null
-                        isChecked = autoSync && template?.inheritFrom != null
+                        // 空白模板没有内容可同步，不给勾
+                        isEnabled = following != null && following != SparkConfig.BUILTIN_BLANK
+                        isChecked = autoSync && isEnabled
                         setOnCheckedChangeListener { _, checked -> autoSync = checked }
                     },
                 )
@@ -345,7 +389,10 @@ class ConversationEditActivity : Activity() {
             addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
             addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
             addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
-            if (ConfigStore.load(this@ConversationEditActivity).conversation(conversationId)?.inheritFrom != null) {
+            // 这个会话自己的变量（同名会覆盖父模板的）：变量页
+            addView(iconButton(UiKit.Icons.VARIABLE_GROUP, "", compact = true, hint = "本会话的变量") { openVariables() })
+            val following = ConfigStore.load(this@ConversationEditActivity).conversation(conversationId)?.inheritFrom
+            if (following != null && following != SparkConfig.BUILTIN_BLANK) {
                 addView(iconButton(UiKit.Icons.DISCARD, "", compact = true, hint = "重置为父模板内容") { reset() })
             }
         }
@@ -357,6 +404,77 @@ class ConversationEditActivity : Activity() {
     private fun pickMacros() {
         val label = ConfigStore.load(this).snapshots.firstOrNull { it.conversationId == conversationId }?.displayName ?: "本会话"
         MacroPicker.show(this, conversationId, label) { renderInfo() }
+    }
+
+    /**
+     * 打开**本会话自己的**变量页。
+     *
+     * 父模板的变量一起带过去，但只用于补全、试算和提示；保存时只回传这个会话自己的那些，
+     * 父模板的变量一个字都不动。
+     */
+    private fun openVariables() {
+        val config = ConfigStore.load(this)
+        val template = config.conversation(conversationId)
+        val inherited = config.templateVarsForGroup(template?.inheritFrom.orEmpty())
+        val label = config.snapshots.firstOrNull { it.conversationId == conversationId }?.displayName?.takeIf { it.isNotBlank() }
+            ?: config.conversationLabel(conversationId)
+        runCatching {
+            startActivityForResult(
+                Intent(this, VariableListActivity::class.java)
+                    .putExtra(VariableListActivity.EXTRA_VARS, ConfigCodec.encodeVars(template?.variables.orEmpty()).toString())
+                    .putExtra(VariableListActivity.EXTRA_INHERITED, ConfigCodec.encodeVars(inherited).toString())
+                    .putExtra(VariableListActivity.EXTRA_PARENT_ID, template?.inheritFrom)
+                    .putExtra(VariableListActivity.EXTRA_OWNER, label),
+                REQUEST_VARIABLES,
+            )
+        }.onFailure { Toast.makeText(this, "打不开变量页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 变量页回来：写进这个会话模板的 `variables`（还没建模板就顺手建一个空白模板）。 */
+    @Deprecated("变量页回传")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?,
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_VARIABLES || resultCode != RESULT_OK || data == null) return
+        val raw = data.getStringExtra(VariableListActivity.RESULT_VARS) ?: return
+        val vars: List<TemplateVar> =
+            runCatching { ConfigCodec.decodeVars(org.json.JSONArray(raw)) }.getOrDefault(emptyList())
+        val now = System.currentTimeMillis()
+        ConfigStore.update(this) { cfg ->
+            val current = cfg.conversation(conversationId)
+            if (current == null) {
+                cfg.copy(
+                    conversations =
+                        cfg.conversations +
+                            TemplateOps.blank(
+                                conversationId = conversationId,
+                                body = editor.text,
+                                now = now,
+                                selectedAt = if (conversationId in cfg.selectedIds()) now else 0L,
+                                variables = vars,
+                            ),
+                )
+            } else {
+                cfg.copy(
+                    conversations =
+                        cfg.conversations.map {
+                            if (it.conversationId == conversationId) {
+                                it.copy(variables = vars, updatedAt = now)
+                            } else {
+                                it
+                            }
+                        },
+                )
+            }
+        }
+        renderInfo()
+        // 变量改了：脚本编辑器的补全也刷新一下（ctx.template.新变量）
+        val latest = ConfigStore.load(this)
+        editor.applyTypes(latest, latest.templateVarsFor(conversationId))
+        Toast.makeText(this, "已保存 ${vars.size} 个变量", Toast.LENGTH_SHORT).show()
     }
 
     private fun save() {
@@ -411,9 +529,11 @@ class ConversationEditActivity : Activity() {
         // 与实际执行一致：自定义函数注入 → 本会话文案 → 挂在本会话（或它的父模板）上的宏
         val targets = listOf(conversationId) + listOfNotNull(config.conversation(conversationId)?.inheritFrom)
         val program = config.composeProgram(editor.text, config.macrosFor(targets))
+        // 变量与真实发送一致：父模板的变量 + 本会话自己的（同名覆盖）
+        val vars = config.templateVarsFor(conversationId)
         val rendered =
             runCatching {
-                SparkScriptEngine.render(program, SparkPreview.variables(snapshot))
+                SparkScriptEngine.render(TemplateVarPrelude.of(vars) + program, SparkPreview.variables(snapshot))
             }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
         AlertDialog
             .Builder(this)

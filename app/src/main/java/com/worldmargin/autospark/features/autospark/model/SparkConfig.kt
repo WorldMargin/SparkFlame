@@ -18,11 +18,18 @@ enum class SyncMode {
 }
 
 /** 通用模板（可命名，多个会话可挂在其下共享同一份文案）。 */
+/** 模板变量：名字 + 一条 JS 表达式（求值时可用 ctx，按定义顺序求值）。 */
+data class TemplateVar(
+    val name: String,
+    val expr: String,
+)
+
 data class TemplateGroup(
     val id: String,
     val name: String,
     val body: String,
     val updatedAt: Long,
+    val variables: List<TemplateVar> = emptyList(),
 ) {
     val bodyHash: String get() = Hash.of(body)
 }
@@ -30,12 +37,14 @@ data class TemplateGroup(
 /**
  * 会话模板。
  *
- * - [inheritFrom] 为 null 表示「继承自空白」= 纯自定义，不参与同步；
- * - 否则指向某个通用模板 [TemplateGroup.id]。
+ * - [inheritFrom] 指向「跟随谁」：某个通用模板 [TemplateGroup.id]、内置模板（`builtin:xxx`，
+ *   含 `builtin:blank` = **空白模板**，即"不用模板、自己写"；克隆来的也归空白模板）。
  * - [parentHashAtSync] 记录上次同步时父模板 body 的哈希，
  *   用于判定本模板是否被本地改过（[modified]）。
  * - [selectedAt] 最后一次出现在「已选目标」里的时间；不在已选目标里的会话，
  *   从这一刻起算满 [SparkConfig.TEMPLATE_GRACE_MS] 就清掉它的模板与发送记录。
+ * - [variables] 这个会话**自己的**变量：生效时排在父模板变量之后（同名覆盖父模板），
+ *   所以能引用父模板的变量；父模板同步内容时不会动它。
  */
 data class ConversationTemplate(
     val conversationId: String,
@@ -45,9 +54,16 @@ data class ConversationTemplate(
     val autoSync: Boolean,
     val updatedAt: Long,
     val selectedAt: Long = 0L,
+    val variables: List<TemplateVar> = emptyList(),
 ) {
-    /** 已修改 = 自身内容与「上次同步到的父内容」不一致。 */
-    val modified: Boolean get() = inheritFrom != null && Hash.of(body) != parentHashAtSync
+    /**
+     * 已修改 = 自身内容与「上次同步到的父内容」不一致。
+     *
+     * 空白模板（`builtin:blank`）不算：它的内容本来就是空的，自己写的每一句都"不等于父模板"，
+     * 但那是正常用法，不该标成「已本地修改」。
+     */
+    val modified: Boolean
+        get() = inheritFrom != null && inheritFrom != SparkConfig.BUILTIN_BLANK && Hash.of(body) != parentHashAtSync
 }
 
 /**
@@ -100,7 +116,7 @@ data class UserFunction(
  * 继承来源：内置模板、自定义模板，或某个会话的派生模板。
  *
  * [parentId] 是「跟随谁」：内置模板用 `builtin:xxx`、自定义模板用模板 id；
- * 为 null 表示**内容固定**（克隆：只复制内容，不跟随任何父模板）。
+ * 为 null 只会出现在未升级的旧数据里（读入时会归到空白模板）。
  */
 data class TemplateSource(
     val parentId: String?,
@@ -181,6 +197,36 @@ data class SparkConfig(
             else -> snapshot.hasSpark && snapshot.needsRenewal
         }
 
+    /**
+     * 解析某个会话最终生效的模板变量：**父模板的变量在前、会话自己的在后**，同名覆盖。
+     *
+     * 自己的变量排在后面有两个好处：求值时能引用父模板已经算出来的变量，
+     * 同名时又能覆盖父模板的值（「就近优先」）。**表达式为空的会话变量等于没填** ——
+     * 会用父模板的同名变量；父模板也没有就留一条空表达式，求值结果为 `null`
+     * （见 `TemplateVarPrelude`）。
+     */
+    fun templateVarsFor(conversationId: String): List<TemplateVar> {
+        val own = conversation(conversationId)
+        return mergeVars(varsAlong(own?.inheritFrom), own?.variables.orEmpty())
+    }
+
+    /** 解析某个一级模板的变量（含父模板），供模板编辑页预览用。 */
+    fun templateVarsForGroup(groupId: String): List<TemplateVar> = varsAlong(groupId)
+
+    private fun varsAlong(startId: String?): List<TemplateVar> {
+        val merged = LinkedHashMap<String, TemplateVar>()
+        var cursor = startId
+        var guard = 0
+        while (cursor != null && guard++ < 32) {
+            val current = group(cursor) ?: break
+            current.variables.forEach { variable ->
+                if (variable.name.isNotBlank() && variable.name !in merged) merged[variable.name] = variable
+            }
+            cursor = conversation(cursor)?.inheritFrom
+        }
+        return merged.values.toList()
+    }
+
     /** 挂在指定模板下的会话（内置模板的 id 同样适用）。 */
     fun membersOf(templateId: String): List<ConversationTemplate> = conversations.filter { it.inheritFrom == templateId }
 
@@ -208,15 +254,14 @@ data class SparkConfig(
             ?: conversationId
 
     /**
-     * 可作为继承来源的清单：内置模板 + 自定义模板 + 其它会话的派生模板。
+     * 可作为继承来源的清单：内置模板（**含空白模板** = 不用模板、自己写）+ 自定义模板 + 其它会话的派生模板。
      *
      * 「派生自某个派生模板」的语义（用户确认）：**挂到它的父模板上，但内容复制它的当前内容**。
      * 例：`A → B`，C 派生自 B ⇒ C 挂在 A 上（以后跟 A 同步），C 的内容 = B 的内容。
-     * 若来源本身内容固定（没有父），则 C 也是内容固定。另有一条**克隆**：同样复制内容、不跟随任何父。
+     * 若来源本身跟随的是空白模板（没有父内容），则 C 也跟随空白模板。另有一条**克隆**：同样复制内容，之后跟随空白模板。
      */
     fun sources(excludeConversationId: String? = null): List<TemplateSource> =
         BuiltinTemplates.ALL
-            .filter { it.body.isNotBlank() }
             .map { TemplateSource(BUILTIN_PREFIX + it.id, "内置：" + it.name, it.body) } +
             groups.map { TemplateSource(it.id, "模板：" + it.name.ifBlank { "(未命名)" }, it.body) } +
             conversations
@@ -224,10 +269,10 @@ data class SparkConfig(
                 .flatMap { child ->
                     val label = conversationLabel(child.conversationId)
                     val parent = child.inheritFrom
-                    val parentLabel = templateName(parent)?.let { "挂在 $it、复制它的内容" } ?: "内容固定"
+                    val parentLabel = templateName(parent)?.let { "挂在 $it、复制它的内容" } ?: "空白模板"
                     listOf(
                         TemplateSource(parent, "派生：$label（$parentLabel）", child.body),
-                        TemplateSource(null, "克隆：$label（复制内容、不跟随）", child.body),
+                        TemplateSource(null, "克隆：$label（复制内容，之后跟空白模板）", child.body),
                     )
                 }
 
@@ -331,6 +376,35 @@ data class SparkConfig(
         /** 内置模板作为继承来源时的 id 前缀（内置模板不在 groups 里，用前缀区分）。 */
         const val BUILTIN_PREFIX = "builtin:"
 
+        /**
+         * 空白模板的 id：= **不用模板、自己写**。
+         *
+         * 它和自定义模板在继承关系上没有区别（一样「跟随父模板」，一样出现在模板页的派生列表里），
+         * 唯一的区别是父模板内容是空的 —— 所以会话照常发自己写的那段文案。
+         */
+        const val BUILTIN_BLANK = BUILTIN_PREFIX + "blank"
+
+        /**
+         * 合并两层变量：父模板的在前、下级（会话）的在后，同名覆盖。
+         *
+         * - 下级变量**表达式为空**等于没填：父模板有同名的就用父模板的；都没有就保留这条空表达式，
+         *   求值结果为 `null`（`TemplateVarPrelude` 直接赋 null，不会因为语法错变成 undefined）。
+         * - 名字为空的条目一律忽略。
+         */
+        fun mergeVars(
+            parent: List<TemplateVar>,
+            child: List<TemplateVar>,
+        ): List<TemplateVar> {
+            val merged = LinkedHashMap<String, TemplateVar>()
+            parent.filter { it.name.isNotBlank() }.forEach { merged[it.name] = it }
+            child.filter { it.name.isNotBlank() }.forEach { variable ->
+                if (variable.expr.isBlank() && variable.name in merged) return@forEach
+                merged.remove(variable.name)
+                merged[variable.name] = variable
+            }
+            return merged.values.toList()
+        }
+
         /** 宏执行前把结果变量归一成列表（模板里若写成字符串赋值，这里包成单元素列表）。 */
         private const val RESULT_NORMALIZE =
             "if (typeof \$spark_result\$ === 'string') { \$spark_result\$ = [\$spark_result\$]; }"
@@ -349,13 +423,18 @@ object Hash {
 object TemplateOps {
     private const val BLANK = "blank"
 
-    /** 新建/改写模板时，从父模板继承内容（[selectedAt] 沿用原有记录，别把保留时间重置掉）。 */
+    /**
+     * 新建/改写模板时，从父模板继承内容（[selectedAt] 沿用原有记录，别把保留时间重置掉）。
+     *
+     * [variables] 是这个会话自己的变量：换继承来源、重置内容都不该把它们弄丢，调用方传进来即可。
+     */
     fun inheritFrom(
         group: TemplateGroup,
         conversationId: String,
         autoSync: Boolean,
         now: Long,
         selectedAt: Long = 0L,
+        variables: List<TemplateVar> = emptyList(),
     ): ConversationTemplate =
         ConversationTemplate(
             conversationId = conversationId,
@@ -365,37 +444,47 @@ object TemplateOps {
             autoSync = autoSync,
             updatedAt = now,
             selectedAt = selectedAt,
+            variables = variables,
         )
 
-    /** 继承自空白 = 纯自定义。 */
+    /**
+     * 跟随**空白模板**（不用模板、自己写；克隆来的也归这一类）。
+     *
+     * 和跟随自定义模板没有区别（还是「跟随父模板」、还是出现在模板页的派生列表里），
+     * 唯一区别是父模板内容是空的，所以 [body] 保留用户已经写好的文案 —— 这条会照常发送。
+     */
     fun blank(
         conversationId: String,
         body: String = "",
         now: Long,
         selectedAt: Long = 0L,
+        variables: List<TemplateVar> = emptyList(),
     ): ConversationTemplate =
         ConversationTemplate(
             conversationId = conversationId,
-            inheritFrom = null,
+            inheritFrom = SparkConfig.BUILTIN_BLANK,
             body = body,
-            parentHashAtSync = "",
+            parentHashAtSync = Hash.of(""),
             autoSync = false,
             updatedAt = now,
             selectedAt = selectedAt,
+            variables = variables,
         )
 
-    /** 重置：回到当前继承来源的内容。 */
+    /** 重置：回到当前继承来源的内容（空白模板就清空；这个会话自己的变量保留）。 */
     fun reset(
         template: ConversationTemplate,
         group: TemplateGroup?,
         now: Long,
     ): ConversationTemplate {
-        if (group == null) return blank(template.conversationId, "", now, template.selectedAt)
-        return inheritFrom(group, template.conversationId, template.autoSync, now, template.selectedAt)
+        if (group == null || template.inheritFrom == SparkConfig.BUILTIN_BLANK) {
+            return blank(template.conversationId, "", now, template.selectedAt, template.variables)
+        }
+        return inheritFrom(group, template.conversationId, template.autoSync, now, template.selectedAt, template.variables)
     }
 
     /**
-     * 从某个[来源][source]派生：跟随它的父模板（`source.parentId`，为 null 即内容固定的克隆），
+     * 从某个[来源][source]派生：跟随它的父模板（`source.parentId`；**为 null 的克隆也算跟随空白模板**），
      * 内容取来源当前内容并记下哈希（下次父模板同步会以它为基准）。
      */
     fun fromSource(
@@ -404,16 +493,20 @@ object TemplateOps {
         autoSync: Boolean,
         now: Long,
         selectedAt: Long = 0L,
-    ): ConversationTemplate =
-        ConversationTemplate(
+        variables: List<TemplateVar> = emptyList(),
+    ): ConversationTemplate {
+        val parent = source.parentId ?: SparkConfig.BUILTIN_BLANK
+        return ConversationTemplate(
             conversationId = conversationId,
-            inheritFrom = source.parentId,
+            inheritFrom = parent,
             body = source.body,
             parentHashAtSync = Hash.of(source.body),
-            autoSync = source.parentId != null && autoSync,
+            autoSync = parent != SparkConfig.BUILTIN_BLANK && autoSync,
             updatedAt = now,
             selectedAt = selectedAt,
+            variables = variables,
         )
+    }
 
     /**
      * 父模板改动后，按策略把新内容**级联**推给子树（`A → B → C` 会一层层跟下来）。
@@ -528,6 +621,22 @@ object ConfigCodec {
 
     private const val INHERIT_BLANK = "blank"
 
+    /** 模板变量数组 → JSON（配置文件与「变量编辑页」的来回传参共用同一份编码）。 */
+    fun encodeVars(variables: List<TemplateVar>): JSONArray =
+        JSONArray().apply {
+            variables.forEach { variable -> put(JSONObject().put("name", variable.name).put("expr", variable.expr)) }
+        }
+
+    /** JSON → 模板变量数组（缺字段按空串处理）。 */
+    fun decodeVars(array: JSONArray?): List<TemplateVar> =
+        if (array == null) {
+            emptyList()
+        } else {
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.let { TemplateVar(it.optString("name"), it.optString("expr")) }
+            }
+        }
+
     /** 会话快照数组 → JSON（跨进程写快照与管理界面存盘共用同一份编码，字段不会漏）。 */
     fun encodeSnapshots(snapshots: List<ConversationSnapshot>): JSONArray {
         val array = JSONArray()
@@ -561,7 +670,8 @@ object ConfigCodec {
                     .put("id", group.id)
                     .put("name", group.name)
                     .put("body", group.body)
-                    .put("updatedAt", group.updatedAt),
+                    .put("updatedAt", group.updatedAt)
+                    .put("variables", encodeVars(group.variables)),
             )
         }
 
@@ -575,7 +685,8 @@ object ConfigCodec {
                     .put("parentHashAtSync", template.parentHashAtSync)
                     .put("autoSync", template.autoSync)
                     .put("updatedAt", template.updatedAt)
-                    .put("selectedAt", template.selectedAt),
+                    .put("selectedAt", template.selectedAt)
+                    .put("variables", encodeVars(template.variables)),
             )
         }
 
@@ -640,6 +751,7 @@ object ConfigCodec {
                         name = item.optString("name"),
                         body = item.optString("body"),
                         updatedAt = item.optLong("updatedAt"),
+                        variables = decodeVars(item.optJSONArray("variables")),
                     )
             }
         }
@@ -652,12 +764,13 @@ object ConfigCodec {
                 conversations +=
                     ConversationTemplate(
                         conversationId = item.optString("conversationId"),
-                        inheritFrom = parent.takeIf { it.isNotEmpty() && it != INHERIT_BLANK },
+                        inheritFrom = if (parent.isEmpty() || parent == INHERIT_BLANK) SparkConfig.BUILTIN_BLANK else parent,
                         body = item.optString("body"),
                         parentHashAtSync = item.optString("parentHashAtSync"),
                         autoSync = item.optBoolean("autoSync"),
                         updatedAt = item.optLong("updatedAt"),
                         selectedAt = item.optLong("selectedAt"),
+                        variables = decodeVars(item.optJSONArray("variables")),
                     )
             }
         }

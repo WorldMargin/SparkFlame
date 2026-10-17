@@ -34,12 +34,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 object AutoSparkBridge {
     private const val DEFAULT_LIMIT = 200
 
-    /** 打开抖音后延迟触发：等 IM 初始化完成。 */
-    private const val START_DELAY_MS = 30_000L
+    /** 打开抖音后稍等 IM 初始化；之后就靠探测（refreshSnapshot 成功即视为就绪）。 */
+    private const val START_DELAY_MS = 5_000L
 
-    /** 会话列表还没就绪时的重试间隔与次数。 */
-    private const val RETRY_DELAY_MS = 20_000L
-    private const val MAX_ATTEMPTS = 8
+    /** 探测间隔：取不到会话就等这么久再试，近似握手重试。 */
+    private const val RETRY_DELAY_MS = 2_500L
+
+    /** 最多探测这么多次（约 5s + 22×2.5s ≈ 60s 封顶）。 */
+    private const val MAX_ATTEMPTS = 22
 
     /** 唤醒模块进程后等它就绪的时间。 */
     private const val WAKE_WAIT_MS = 2_000L
@@ -53,7 +55,7 @@ object AutoSparkBridge {
 
     /**
      * 无任何模板时的兜底文案（模板页的「按时问候」内置模板用的就是这份）。
-     * 注意：它**不会**自动生效——没选模板的会话一律不发。
+     * 注意：它**不会**自动生效——没写文案的会话一律不发。
      */
     val DEFAULT_SCRIPT: String get() = BuiltinTemplates.GREETING.body
 
@@ -63,8 +65,8 @@ object AutoSparkBridge {
     /**
      * 某会话要执行的完整程序：**自定义函数注入 → 模板脚本 → 宏（按顺序）**。
      *
-     * 默认是**空白**：既没有模板内容、也没有宏时返回空串，[runRenew] 会跳过这个会话，
-     * 不再回退到什么默认模板 / 内置文案——内置文案要用户在模板页里自己选。
+     * 「空白模板」不是不发：会话自己写的文案就是这里的 body。
+     * 只有**文案与宏都没有**时返回空串，[runRenew] 才跳过这个会话（不回退默认模板）。
      */
     fun scriptFor(
         config: SparkConfig,
@@ -246,6 +248,125 @@ object AutoSparkBridge {
             .onFailure { ModLog.e("快照更新广播发送失败", it) }
     }
 
+    // ------------------------------------------------------------ 跨天值守
+
+    /** 值守用的主线程 Handler：只在抖音有可见 Activity 时挂任务。 */
+    private val watcherHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** 当前是否有可见 Activity（用 started 计数判断）。 */
+    private val visibleActivities = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 值守是否已经挂上（避免重复注册生命周期回调）。 */
+    private val watcherInstalled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 自动任务互斥：上一轮没跑完就不再起新的。 */
+    private val autoRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private var watcherContext: Context? = null
+
+    /** 「上次自动跑完的日期」落在抖音自己的目录里，跟着抖音的数据走。 */
+    private fun lastRunFile(context: Context) = java.io.File(context.filesDir, "spark_last_auto_day")
+
+    private fun lastRunDay(context: Context): String =
+        runCatching { lastRunFile(context).readText().trim() }.getOrDefault("")
+
+    private fun markRunDay(
+        context: Context,
+        day: String,
+    ) {
+        runCatching { lastRunFile(context).writeText(day) }
+    }
+
+    /**
+     * 挂上值守：抖音有 Activity 可见时按时间自动升级检查频率。
+     *
+     * 平时不轮询 —— 只在 23:30 之后才密集检查，白天几乎零开销。
+     */
+    fun startDayWatcher(application: android.app.Application) {
+        if (!watcherInstalled.compareAndSet(false, true)) return
+        val context = application.applicationContext ?: application
+        watcherContext = context
+        application.registerActivityLifecycleCallbacks(
+            object : android.app.Application.ActivityLifecycleCallbacks {
+                override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) = Unit
+                override fun onActivityResumed(activity: android.app.Activity) = Unit
+
+                override fun onActivityPaused(activity: android.app.Activity) = Unit
+
+                override fun onActivityStarted(activity: android.app.Activity) {
+                    visibleActivities.incrementAndGet()
+                    // 每次回到界面：先按条件查一次，再按当前时间重新排表
+                    Thread { autoRunIfDayChanged(context) }.start()
+                    rescheduleWatcher()
+                }
+
+                override fun onActivityStopped(activity: android.app.Activity) {
+                    if (visibleActivities.decrementAndGet() <= 0) {
+                        visibleActivities.set(0)
+                        watcherHandler.removeCallbacksAndMessages(null)
+                    }
+                }
+
+                override fun onActivitySaveInstanceState(
+                    activity: android.app.Activity,
+                    outState: android.os.Bundle,
+                ) = Unit
+
+                override fun onActivityDestroyed(activity: android.app.Activity) = Unit
+            },
+        )
+    }
+
+    /** 按当前时间和可见性重排下一次检查（这就是"每次唤醒界面检查条件、切换定时器"）。 */
+    private fun rescheduleWatcher() {
+        val context = watcherContext ?: return
+        watcherHandler.removeCallbacksAndMessages(null)
+        if (visibleActivities.get() <= 0) return
+        watcherHandler.postDelayed(
+            {
+                Thread { autoRunIfDayChanged(context) }.start()
+                rescheduleWatcher()
+            },
+            watcherDelayMs(),
+        )
+    }
+
+    /** 离零点越近检查越密：平时一次等到 23:30，之后每分钟，23:58 起每 5 秒。 */
+    private fun watcherDelayMs(): Long {
+        val calendar = java.util.Calendar.getInstance()
+        val minutes = calendar.get(java.util.Calendar.HOUR_OF_DAY) * 60 + calendar.get(java.util.Calendar.MINUTE)
+        val lateWindow = 23 * 60 + 58
+        val eveningStart = 23 * 60 + 30
+        val earlyWindow = 5
+        return when {
+            // 零点前后：5 秒一次，抓住跨天的那一刻
+            minutes >= lateWindow || minutes < earlyWindow -> 5_000L
+            // 23:30 之后：每分钟
+            minutes >= eveningStart -> 60_000L
+            // 其余时间：一次性等到 23:30，中间不轮询
+            else -> ((eveningStart - minutes).toLong() * 60_000L).coerceAtLeast(60_000L)
+        }
+    }
+
+    /** 今天还没自动跑过就跑一轮（自动任务，遵守总开关）。 */
+    private fun autoRunIfDayChanged(context: Context) {
+        val today = dayFormat.format(Date())
+        if (lastRunDay(context) == today) return
+        if (!autoRunning.compareAndSet(false, true)) return
+        try {
+            val summary = runRenew(context, respectEnabled = true)
+            if (summary.optBoolean("ok")) {
+                markRunDay(context, today)
+                val sent = summary.optJSONArray("sent")?.length() ?: 0
+                HostTrace.add(context, "跨天补跑完成：已发 $sent 个")
+            }
+        } catch (error: Throwable) {
+            ModLog.e("跨天补跑失败", error)
+        } finally {
+            autoRunning.set(false)
+        }
+    }
+
     /**
      * 扫描并发送一轮。
      *
@@ -270,6 +391,8 @@ object AutoSparkBridge {
         val skipped = JSONArray()
         val failed = JSONArray()
 
+        // 第一遍：只筛选，不发送 —— 先算出这轮「待续」有几个，提示要用它
+        val candidates = mutableListOf<JSONObject>()
         for (index in 0 until conversations.length()) {
             val conversation = conversations.optJSONObject(index) ?: continue
             val isGroup = conversation.optBoolean("isGroup")
@@ -289,7 +412,24 @@ object AutoSparkBridge {
                         (spark?.optBoolean("hasSpark") == true && spark.optBoolean("needsRenewal"))
                 if (!needsRenewal) continue
             }
+            candidates += conversation
+        }
+        HostTrace.add(context, "待续 ${candidates.size} 个")
+        if (candidates.isEmpty()) {
+            com.worldmargin.autospark.core.DouToastHelper.show(context, "（今日已无需发送）")
+            return JSONObject()
+                .put("ok", true)
+                .put("today", today)
+                .put("sent", sent)
+                .put("skipped", skipped)
+                .put("failed", failed)
+        }
+        com.worldmargin.autospark.core.DouToastHelper.show(context, "（有 ${candidates.size} 个待续）")
 
+        // 第二遍：真正发送
+        for (conversation in candidates) {
+            val isGroup = conversation.optBoolean("isGroup")
+            val conversationId = conversation.optString("conversationId")
             if (!ignoreSentToday && config.sentDays[conversationId] == today) {
                 skipped.put(JSONObject().put("conversationId", conversationId).put("reason", "今日已发送"))
                 continue
@@ -298,13 +438,18 @@ object AutoSparkBridge {
             val name = displayName(conversation)
             val script = scriptFor(config, conversationId)
             if (script.isEmpty()) {
-                // 默认空白：没给这个会话选模板就不发（内置文案也要用户自己选）
-                skipped.put(JSONObject().put("conversationId", conversationId).put("name", name).put("reason", "未选择模板"))
+                // 没写文案、也没挂宏：这个会话确实没东西可发
+                skipped.put(JSONObject().put("conversationId", conversationId).put("name", name).put("reason", "没有文案"))
                 continue
             }
             val spark = conversation.optJSONObject("spark")
             val text =
-                runCatching { SparkScriptEngine.render(script, buildVariables(conversation, spark)) }
+                runCatching { SparkScriptEngine.render(
+                        com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(
+                            config.templateVarsFor(conversationId),
+                        ) + script,
+                        buildVariables(conversation, spark),
+                    ) }
                     .getOrElse { error ->
                         failed.put(
                             JSONObject().put("conversationId", conversationId).put("name", name)
@@ -328,6 +473,11 @@ object AutoSparkBridge {
             }
         }
 
+        com.worldmargin.autospark.core.DouToastHelper.show(
+            context,
+            "（星火燎原：完成 ${sent.length()} 个，失败 ${failed.length()} 个）",
+        )
+
         return JSONObject()
             .put("ok", true)
             .put("today", today)
@@ -342,7 +492,8 @@ object AutoSparkBridge {
         Thread(
             {
                 wakeModule(context)
-                HostTrace.start(context, "已安排：30 秒后扫描会话")
+                HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
+                com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")
                 runCatching {
                     Thread.sleep(START_DELAY_MS)
                     // 冷启动时 IM 可能还没就绪，会话列表取不到就退避重试
@@ -350,16 +501,20 @@ object AutoSparkBridge {
                     var outcome = refreshSnapshot(context)
                     while (!outcome.ok) {
                         attempt++
-                        HostTrace.add(context, "第 $attempt 次取会话失败：${outcome.detail}")
+                        // 探测很密，每 4 次记一条，避免把宿主轨迹刷满
+                        if (attempt % 4 == 0) {
+                            HostTrace.add(context, "第 $attempt 次探测未就绪：${outcome.detail}")
+                        }
                         if (attempt >= MAX_ATTEMPTS) {
-                            HostTrace.add(context, "重试 $MAX_ATTEMPTS 次仍未取到会话，本次跳过")
+                            HostTrace.add(context, "探测 $MAX_ATTEMPTS 次仍未就绪，本次跳过")
                             ModLog.i("会话列表未就绪，本次不续火花")
                             return@runCatching
                         }
                         Thread.sleep(RETRY_DELAY_MS)
                         outcome = refreshSnapshot(context)
                     }
-                    HostTrace.add(context, "快照已写入：${outcome.detail}")
+                    HostTrace.add(context, "IM 已就绪（探测 $attempt 次），快照已写入")
+                    markRunDay(context, dayFormat.format(Date()))
                     val summary = runRenew(context, respectEnabled = true)
                     if (summary.optBoolean("ok")) {
                         val line =

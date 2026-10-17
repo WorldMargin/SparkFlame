@@ -3,6 +3,9 @@
 一个 LSPosed 模块：注入抖音进程，**自动给「今天还没互动」的会话续火花**（发一条你自己写的文案）。
 文案是一段 JavaScript，可以用模板、变量、宏和自定义函数组合出来 —— 目标就是「每天自动续，但话说得像真人说的」。
 
+> **文档**：[`docs/manual.md`](docs/manual.md) —— 使用说明 + 「给 AI 的模块说明书」（发送时序、输出契约、
+> `ctx` API、变量合并规则、自检清单、可直接贴给 AI 的提示词）。**要写模板的 AI 请先读这份**。
+
 ## 下载
 
 - **Release 页（推荐）**：[gitee.com/WorldMargin/SparkFlame/releases](https://gitee.com/WorldMargin/SparkFlame/releases)

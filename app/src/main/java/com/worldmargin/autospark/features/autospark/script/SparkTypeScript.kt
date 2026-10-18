@@ -46,8 +46,8 @@ object SparkTypeScript {
         builder.append("\tthisid: string;\n")
         builder.append("\t/** 父模板信息 */\n")
         builder.append("\tparent: SparkTemplateParent;\n")
-        builder.append("\t/** 变量名 → 求值结果；没声明的名字也能读（值为 undefined） */\n")
-        builder.append("\t[key: string]: any;\n")
+        builder.append("\t/** 变量都在 ctx.template.vars 下 */\n")
+        builder.append("\tvars: SparkVars;\n")
         // 同名只声明一次（会话自己的变量排在后面，所以后者覆盖）
         val unique = LinkedHashMap<String, TemplateVar>()
         templateVars.filter { it.name.isNotBlank() }.forEach { unique[it.name] = it }
@@ -57,6 +57,14 @@ object SparkTypeScript {
         }
         builder.append("}\n")
         builder.append("interface SparkBuiltin {\n")
+        builder.append("interface SparkVars {\n")
+        builder.append("\t/** 变量名 → 求值结果；没声明的名字也能读（值为 undefined） */\n")
+        builder.append("\t[key: string]: any;\n")
+        unique.values.forEach { variable ->
+            builder.append("\t/** 变量：").append(escape(variable.name)).append(" */\n")
+            builder.append("\t").append(property(variable.name)).append(": any;\n")
+        }
+        builder.append("}\n")
         SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.BUILTIN_OBJ }.forEach { variable ->
             builder.append("\t/** ").append(escape(variable.desc)).append(" */\n")
             builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")

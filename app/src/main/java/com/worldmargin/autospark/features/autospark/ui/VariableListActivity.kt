@@ -404,7 +404,7 @@ class VariableListActivity : Activity() {
                     append(SparkScriptEngine.RESULT_VAR)
                     append(".push(")
                     append(JSONObject.quote(variable.name + " = "))
-                    append(" + String(ctx.template[")
+                    append(" + String(ctx.template.vars[")
                     append(JSONObject.quote(variable.name))
                     append("]));\n")
                 }

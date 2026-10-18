@@ -414,6 +414,7 @@ class VariableListActivity : Activity() {
                 SparkScriptEngine.render(
                     TemplateVarPrelude.of(vars) + pushes,
                     SparkPreview.variables(sample),
+                    SparkScriptEngine.macroNamesJson(config),
                 )
             }
         AlertDialog

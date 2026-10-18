@@ -140,7 +140,33 @@ object SparkScriptEngine {
     fun render(
         script: String,
         values: Map<String, Any?>,
-    ): String = renderFull(script, values, SandboxEnv.EMPTY.copy(preview = true), "", "").text
+    ): String = render(script, values, "{}")
+
+    /**
+     * 预览用重载：除了只读，还能带上宏名映射（`ctx.macro.name`）。
+     *
+     * 预览路径不经过 bridge，宏名要由调用方自己传进来，
+     * 否则宏里拿到的名字是空串。
+     */
+    fun render(
+        script: String,
+        values: Map<String, Any?>,
+        macroNames: String,
+    ): String =
+        renderFull(
+            script,
+            values,
+            SandboxEnv.EMPTY.copy(preview = true, macroNames = macroNames),
+            "",
+            "",
+        ).text
+
+    /** 宏 id → 名字的 JSON（预览路径直接用它）。 */
+    fun macroNamesJson(config: com.worldmargin.autospark.features.autospark.model.SparkConfig): String {
+        val names = org.json.JSONObject()
+        config.macros.forEach { macro -> names.put(macro.id, macro.name) }
+        return names.toString()
+    }
 
     /**
      * 执行脚本，取回文案与沙盒改动。
@@ -331,12 +357,11 @@ object SparkScriptEngine {
     /** 沙盒与系统接口：挂在 `ctx.macro` / `ctx.system` 下。 */
     val SANDBOX_FUNCTIONS: List<Doc> =
         listOf(
+            Doc("id", "", "当前宏的 id（模板段为空串）", "string", MACRO_OBJ),
             Doc("name", "", "当前宏的名字（模板段为空串）", "string", MACRO_OBJ),
             Doc("getvar", "name", "读一个自己的变量", "any", MACRO_OBJ),
             Doc("setvar", "name, value", "写一个自己的变量（值是任意 JS 值，存成 JSON）", "void", MACRO_OBJ),
             Doc("deletevar", "name", "删一个自己创建的变量", "boolean", MACRO_OBJ),
-            Doc("getAllMountedTemplate", "", "这个宏挂在哪些模板上（id 数组）", "string[]", MACRO_OBJ),
-            Doc("getAllMountedConversation", "", "这个宏挂在哪些会话上（id 数组）", "string[]", MACRO_OBJ),
         )
 
     /** 系统接口：挂在 `ctx.system` 下。 */
@@ -346,8 +371,8 @@ object SparkScriptEngine {
             Doc("getConversation", "id", "按会话 id 取信息结构（没有返回 null）", "any", SYSTEM_OBJ),
             Doc("getTemplate", "id", "按模板 id 取信息结构（id/name/body/childs/isBuiltin）", "any", SYSTEM_OBJ),
             Doc("getMacro", "id", "按宏 id 取信息结构（id/name/body/templates/conversations）", "any", SYSTEM_OBJ),
-            Doc("mountMacro", "name, target?", "把宏挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
-            Doc("unmountMacro", "name, target?", "把宏从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
+            Doc("mountMacro", "id, target?", "按宏 id 挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
+            Doc("unmountMacro", "id, target?", "按宏 id 从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
             Doc("unmountAll", "target?", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
         )
 
@@ -456,9 +481,6 @@ object SparkScriptEngine {
           getvar: function(name){ return __requireMacro().getvar(name); },
           setvar: function(name, value){ return __requireMacro().setvar(name, value); },
           deletevar: function(name){ return __requireMacro().deletevar(name); },
-          getAllMountedTemplate: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); },
-          getAllMountedConversation: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); },
-          __reserved: true
         };
         function __requireMacro(){
           if (String(__sb.owner).indexOf("macro:") !== 0) {
@@ -477,7 +499,10 @@ object SparkScriptEngine {
         __sb.preview = __sb.preview === true;
         function __sandboxOwner(owner){
           __sb.owner = owner;
-          ctx.macro.name = (String(owner).indexOf("macro:") === 0) ? (__sb.names[String(owner).substring(6)] || "") : "";
+          var isMacro = String(owner).indexOf("macro:") === 0;
+          __sb.macroId = isMacro ? String(owner).substring(6) : "";
+          ctx.macro.id = __sb.macroId;
+          ctx.macro.name = isMacro ? (__sb.names[__sb.macroId] || "") : "";
         }
 
         // 系统接口：会话列表 + 宏挂载
@@ -500,15 +525,15 @@ object SparkScriptEngine {
           getConversation: function(id){ return __lookup("conversations", id); },
           getTemplate: function(id){ return __lookup("templates", id); },
           getMacro: function(id){ return __lookup("macros", id); },
-          mountMacro: function(name, target){
+          mountMacro: function(id, target){
             if (__sb.preview) return;
             var t = __targetOf(target);
-            __sb.ops.push(["mount", String(name), t[0], t[1]]);
+            __sb.ops.push(["mount", String(id), t[0], t[1]]);
           },
-          unmountMacro: function(name, target){
+          unmountMacro: function(id, target){
             if (__sb.preview) return;
             var t = __targetOf(target);
-            __sb.ops.push(["unmount", String(name), t[0], t[1]]);
+            __sb.ops.push(["unmount", String(id), t[0], t[1]]);
           },
           unmountAll: function(target){
             if (__sb.preview) return;

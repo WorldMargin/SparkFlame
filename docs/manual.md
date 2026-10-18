@@ -170,15 +170,14 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 | `ctx.system.getConversation(id)` | object | 按会话 id 取信息：`{id,name,remark,days,state,stateText,isGroup,template,parent,macros}` | ✅ |
 | `ctx.system.getTemplate(id)` | object | 按模板 id 取信息：`{id,name,body,childs,isBuiltin}` | ✅ |
 | `ctx.system.getMacro(id)` | object | 按宏 id 取信息：`{id,name,body,templates,conversations}` | ✅ |
+| `ctx.macro.id` | string | 当前宏的 id（模板段为空串） | ✅ |
 | `ctx.macro.name` | string | 当前宏的名字（模板段为空串） | ✅ |
 | `ctx.macro.getvar(name)` | any | 读自己的一个变量 | ✅ |
 | `ctx.macro.setvar(name, value)` | void | 写一个变量（值按 JSON 存） | ⚠️ |
 | `ctx.macro.deletevar(name)` | boolean | 删一个自己创建的变量 | ⚠️ |
-| `ctx.macro.getAllMountedTemplate()` | string[] | 这个宏挂在哪些模板上 | ✅ |
-| `ctx.macro.getAllMountedConversation()` | string[] | 这个宏挂在哪些会话上 | ✅ |
 | `ctx.system.getAllConversation()` | array | 本轮会话数组 `{id, name, remark, days, state, stateText, isGroup}` | ✅ |
-| `ctx.system.mountMacro(name, target?)` | void | 把宏挂到指定会话 / 模板 | ⚠️ |
-| `ctx.system.unmountMacro(name, target?)` | void | 从指定目标摘掉宏 | ⚠️ |
+| `ctx.system.mountMacro(id, target?)` | void | 按宏 id 挂到指定会话 / 模板 | ⚠️ |
+| `ctx.system.unmountMacro(id, target?)` | void | 按宏 id 从指定目标摘掉 | ⚠️ |
 | `ctx.system.unmountAll(target?)` | void | 摘掉目标上所有宏 | ⚠️ |
 | `ctx.functions.<名字>(...)` | any | 自定义函数（「宏/函数」页里定义） | ✅ |
 
@@ -195,6 +194,8 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
   - 自己声明 `var / let / const $spark_result$` 也不会冲突（引擎用的是隐式全局赋值）。
 - 结果是**列表**时按行拼接成一条消息；**空**表示这条不发。
 - 脚本里不要做重活（2 秒上限，超时按失败处理）。
+- 最后一句**不写分号也行**（引擎已经处理了自动分号的坑，以 `)` / `]` 结尾不会再报
+  `N is not a function`），但建议还是写上，以后把脚本贴到别的地方跑也不会出问题。
 
 ### 6.3 变量
 
@@ -256,10 +257,11 @@ $spark_result$.push("（第 " + n + " 次加这句）");
 
 ### 6.5.1 宏的挂载信息
 
-| 调用 | 说明 |
-| --- | --- |
-| `ctx.macro.getAllMountedTemplate()` | 这个宏挂在哪些**模板**上（id 数组） |
-| `ctx.macro.getAllMountedConversation()` | 这个宏挂在哪些**会话**上（id 数组） |
+当前宏的 id 在 `ctx.macro.id`，挂载情况用 `ctx.system.getMacro(ctx.macro.id)` 取：
+
+```js
+var me = ctx.system.getMacro(ctx.macro.id);   // { id, name, body, templates:[id], conversations:[id] }
+```
 
 ### 6.6 系统接口（`ctx.system`）
 
@@ -269,17 +271,18 @@ $spark_result$.push("（第 " + n + " 次加这句）");
 | `ctx.system.getConversation(id)` | 按会话 id 取：`{id,name,remark,days,state,stateText,isGroup,template:{id,name,body},parent:{id,name,body},macros:[{id,name}]}` |
 | `ctx.system.getTemplate(id)` | 按模板 id 取：`{id,name,body,childs:[{id,name}],isBuiltin}` |
 | `ctx.system.getMacro(id)` | 按宏 id 取：`{id,name,body,templates:[id],conversations:[id]}` |
-| `ctx.system.mountMacro(name, target?)` | 把宏挂到指定目标（不传 = 当前会话） |
-| `ctx.system.unmountMacro(name, target?)` | 从指定目标摘掉这个宏 |
+| `ctx.system.mountMacro(id, target?)` | 按宏 **id** 挂到指定目标（不传 = 当前会话） |
+| `ctx.system.unmountMacro(id, target?)` | 按宏 **id** 从指定目标摘掉 |
 | `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
 
 `target` 用对象传：
 
 ```js
-ctx.system.mountMacro("沙盒测试", { conversation: "会话 id" });        // 挂到具体会话
-ctx.system.mountMacro("沙盒测试", { template: "模板 id" });          // 挂到模板，跟着派生会话一起跑
-ctx.system.mountMacro("沙盒测试", { template: "模板 id", inherit: false }); // 仅模板：不往派生会话传播
-ctx.system.unmountAll();                                        // 把当前会话上的宏全摘掉
+// 第一个参数是宏的 id（宏编辑页里可复制，脚本里也能用 ctx.macro.id / getMacro(id).id）
+ctx.system.mountMacro("宏 id", { conversation: "会话 id" });           // 挂到具体会话
+ctx.system.mountMacro("宏 id", { template: "模板 id" });             // 挂到模板，跟着派生会话一起跑
+ctx.system.mountMacro("宏 id", { template: "模板 id", inherit: false });   // 仅模板：不往派生会话传播
+ctx.system.unmountAll();                                          // 把当前会话上的宏全摘掉
 ```
 
 「仅模板」只在该模板自己的试算 / 预览里跑，派生会话不受影响。

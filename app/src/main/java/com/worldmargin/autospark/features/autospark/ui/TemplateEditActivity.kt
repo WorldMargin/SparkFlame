@@ -204,6 +204,7 @@ class TemplateEditActivity : Activity() {
                 SparkScriptEngine.render(
                     TemplateVarPrelude.of(vars) + program,
                     SparkPreview.variables(sample),
+                    SparkScriptEngine.macroNamesJson(config),
                 )
             }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
         AlertDialog

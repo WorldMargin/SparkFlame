@@ -1997,7 +1997,11 @@ class SparkSettingsActivity : Activity() {
         vars: List<com.worldmargin.autospark.features.autospark.model.TemplateVar> = emptyList(),
     ): String {
         val sample = SparkPreview.variables(SparkPreview.sampleAt(config, sampleIndex))
-        return runCatching { SparkScriptEngine.render(com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(vars) + program, sample) }
+        return runCatching { SparkScriptEngine.render(
+                com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(vars) + program,
+                sample,
+                SparkScriptEngine.macroNamesJson(config),
+            ) }
             .getOrElse { "（预览失败：" + (it.message ?: it.toString()) + "）" }
     }
 

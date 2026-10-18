@@ -88,6 +88,8 @@ object SparkTypeScript {
         }
         builder.append("}\n")
         builder.append("interface SparkMacro {\n")
+        builder.append("\t/** 当前宏的 id（模板段为空串） */\n")
+        builder.append("\tid: string;\n")
         builder.append("\t/** 当前宏的名字（模板段为空串） */\n")
         builder.append("\tname: string;\n")
         SparkScriptEngine.SANDBOX_FUNCTIONS.forEach { function ->

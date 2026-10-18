@@ -533,7 +533,11 @@ class ConversationEditActivity : Activity() {
         val vars = config.templateVarsFor(conversationId)
         val rendered =
             runCatching {
-                SparkScriptEngine.render(TemplateVarPrelude.of(vars) + program, SparkPreview.variables(snapshot))
+                SparkScriptEngine.render(
+                        TemplateVarPrelude.of(vars) + program,
+                        SparkPreview.variables(snapshot),
+                        SparkScriptEngine.macroNamesJson(config),
+                    )
             }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
         AlertDialog
             .Builder(this)

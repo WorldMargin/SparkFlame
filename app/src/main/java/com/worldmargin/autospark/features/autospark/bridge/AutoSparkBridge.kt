@@ -285,7 +285,7 @@ object AutoSparkBridge {
         deletes.forEach { (owner, key) -> sandbox.removeAll { it.owner == owner && it.key == key } }
         var macros = latest.macros
         macroOps.forEach { op ->
-            val targets = if (op.kind == "unmountAll") macros.indices.toList() else listOfNotNull(macros.indexOfFirst { it.name == op.name }.takeIf { it >= 0 })
+            val targets = if (op.kind == "unmountAll") macros.indices.toList() else listOfNotNull(macros.indexOfFirst { it.id == op.name }.takeIf { it >= 0 })
             targets.forEach { index ->
                 val macro = macros[index]
                 val applies = macro.appliesTo.toMutableSet()

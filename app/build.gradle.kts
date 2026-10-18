@@ -29,7 +29,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.worldmargin.autospark"
+        applicationId = "io.github.worldmargin.sparkflame"
         minSdk = 26
         targetSdk = 36
         // 固定版本号：历史压缩后提交数会变小，不能再拿它当 versionCode（会触发降级安装失败）

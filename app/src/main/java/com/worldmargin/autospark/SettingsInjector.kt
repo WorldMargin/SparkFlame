@@ -26,7 +26,7 @@ object SettingsInjector {
     private const val SETTING_ACTIVITY = "com.ss.android.ugc.aweme.setting.ui.DouYinSettingNewVersionActivity"
     private const val COMMON_ITEM_VIEW = "com.bytedance.ies.dmt.ui.common.views.CommonItemView"
     private const val MODULE_ENTRY_TAG = "doumcp_settings_entry"
-    private const val MODULE_PACKAGE = "com.worldmargin.autospark"
+    private const val MODULE_PACKAGE = "io.github.worldmargin.sparkflame"
     private const val DEFAULT_ICON_SIZE_PX = 48
 
     /**

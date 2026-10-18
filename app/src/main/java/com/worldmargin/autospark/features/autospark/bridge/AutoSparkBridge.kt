@@ -46,7 +46,11 @@ object AutoSparkBridge {
     /** 唤醒模块进程后等它就绪的时间。 */
     private const val WAKE_WAIT_MS = 2_000L
 
-    private const val MODULE_PACKAGE = "com.worldmargin.autospark"
+    /** 模块 App 的 applicationId（广播 / Activity 跳转用）。 */
+    private const val MODULE_PACKAGE = "io.github.worldmargin.sparkflame"
+
+    /** 空页面的全限定类名：代码包名与 applicationId 不同，不能拼。 */
+    private const val WAKE_ACTIVITY = "com.worldmargin.autospark.WakeActivity"
 
     private val refreshReceiverInstalled = AtomicBoolean(false)
 
@@ -333,7 +337,7 @@ object AutoSparkBridge {
         runCatching {
             context.startActivity(
                 Intent()
-                    .setClassName(MODULE_PACKAGE, MODULE_PACKAGE + ".WakeActivity")
+                    .setClassName(MODULE_PACKAGE, WAKE_ACTIVITY)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
             )
         }.onFailure { ModLog.w("启动模块空页面失败：$it") }

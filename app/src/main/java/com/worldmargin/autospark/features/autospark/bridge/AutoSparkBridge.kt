@@ -134,7 +134,7 @@ object AutoSparkBridge {
         config: SparkConfig,
         writes: List<com.worldmargin.autospark.features.autospark.model.SandboxVar>,
         deletes: List<Pair<String, String>>,
-        macroOps: List<Triple<String, String, String>>,
+        macroOps: List<SparkScriptEngine.MacroOp>,
     ) {
         if (writes.isEmpty() && deletes.isEmpty() && macroOps.isEmpty()) return
         // 重新读一次：这一轮里 markSent 已经改过配置，
@@ -147,13 +147,29 @@ object AutoSparkBridge {
         }
         deletes.forEach { (owner, key) -> sandbox.removeAll { it.owner == owner && it.key == key } }
         var macros = latest.macros
-        macroOps.forEach { (kind, name, conversationId) ->
-            val index = macros.indexOfFirst { it.name == name }
-            if (index < 0) return@forEach
-            val macro = macros[index]
-            val targets = macro.appliesTo.toMutableSet()
-            if (kind == "mount") targets += conversationId else targets -= conversationId
-            macros = macros.toMutableList().also { it[index] = macro.copy(appliesTo = targets) }
+        macroOps.forEach { op ->
+            val targets = if (op.kind == "unmountAll") macros.indices.toList() else listOfNotNull(macros.indexOfFirst { it.name == op.name }.takeIf { it >= 0 })
+            targets.forEach { index ->
+                val macro = macros[index]
+                val applies = macro.appliesTo.toMutableSet()
+                val only = macro.templateOnly.toMutableSet()
+                // 目标是模板时：传播 → appliesTo，仅模板 → templateOnly；两边互斥
+                val isTemplate = op.targetId.isNotBlank() && !op.targetId.contains(":")
+                when (op.kind) {
+                    "mount" -> if (isTemplate && !op.inherit) {
+                        applies -= op.targetId
+                        only += op.targetId
+                    } else {
+                        only -= op.targetId
+                        applies += op.targetId
+                    }
+                    else -> {
+                        applies -= op.targetId
+                        only -= op.targetId
+                    }
+                }
+                macros = macros.toMutableList().also { it[index] = macro.copy(appliesTo = applies, templateOnly = only) }
+            }
         }
         val updated = latest.copy(sandbox = sandbox, macros = macros)
         if (!ConfigClient.write(context, updated)) {
@@ -553,7 +569,7 @@ object AutoSparkBridge {
         // 脚本对沙盒与宏的改动：这一轮跑完再统一落盘
         val pendingSandbox = mutableListOf<com.worldmargin.autospark.features.autospark.model.SandboxVar>()
         val pendingSandboxDeletes = mutableListOf<Pair<String, String>>()
-        val macroOps = mutableListOf<Triple<String, String, String>>()
+        val macroOps = mutableListOf<SparkScriptEngine.MacroOp>()
 
         // 第一遍：只筛选，不发送 —— 先算出这轮「待续」有几个，提示要用它
         val candidates = mutableListOf<JSONObject>()
@@ -647,7 +663,9 @@ object AutoSparkBridge {
                     }
             pendingSandbox.addAll(rendered.sandboxWrites)
             pendingSandboxDeletes.addAll(rendered.sandboxDeletes.map { it.owner to it.key })
-            rendered.macroOps.forEach { (kind, macroName) -> macroOps += Triple(kind, macroName, conversationId) }
+            // 脚本没给目标就默认当前会话
+            macroOps +=
+                rendered.macroOps.map { op -> if (op.targetId.isBlank()) op.copy(targetId = conversationId) else op }
             val text = rendered.text
 
             val outcome = runCatching { JSONObject(ImMsgBridge.sendTextJson(conversationId, text, 0L, "")) }.getOrNull()

@@ -1971,7 +1971,7 @@ class SparkSettingsActivity : Activity() {
         sampleIndex: Int,
         vars: List<com.worldmargin.autospark.features.autospark.model.TemplateVar> = emptyList(),
     ): String =
-        preview(config, config.composeProgram(group.body, config.macrosFor(listOf(group.id))), sampleIndex, vars)
+        preview(config, config.composeProgram(group.body, config.macrosForTemplate(group.id)), sampleIndex, vars)
 
     private fun preview(
         config: SparkConfig,

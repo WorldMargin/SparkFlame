@@ -78,6 +78,11 @@ data class MacroScript(
     val body: String,
     /** 生效目标：通用模板 id 或会话 id（两者命名空间不重叠）。 */
     val appliesTo: Set<String> = emptySet(),
+    /**
+     * 「仅模板」挂载：只在该模板自己的试算 / 预览里跑，
+     * **不往派生会话传播**（传播的那种写在 [appliesTo] 里）。
+     */
+    val templateOnly: Set<String> = emptySet(),
     val updatedAt: Long = 0L,
 )
 
@@ -291,9 +296,18 @@ data class SparkConfig(
                     )
                 }
 
-    /** 挂在某个模板（通用模板 id）或某个会话（会话 id）上的宏，按配置顺序。 */
+    /**
+     * 某个模板（通用模板 id）或某个会话（会话 id）要跑的宏，按配置顺序。
+     *
+     * 只看 [MacroScript.appliesTo]：挂在模板上的宏会跟着派生会话一起跑，而
+     * 「仅模板」（[MacroScript.templateOnly]）只在模板自己的试算 / 预览里出现。
+     */
     fun macrosFor(targetIds: Collection<String>): List<MacroScript> =
         macros.filter { macro -> macro.appliesTo.any { it in targetIds } }
+
+    /** 模板自己的试算 / 预览：传播挂载 + 「仅模板」挂载都算。 */
+    fun macrosForTemplate(templateId: String): List<MacroScript> =
+        macros.filter { macro -> templateId in macro.appliesTo || templateId in macro.templateOnly }
 
     /**
      * 某个会话要执行的完整程序：**自定义函数注入 → 模板脚本 → 宏（按顺序）**。
@@ -651,6 +665,28 @@ object ConfigCodec {
             variables.forEach { variable -> put(JSONObject().put("name", variable.name).put("expr", variable.expr)) }
         }
 
+    /** 沙盒变量数组 → JSON（配置存储与页面传参共用同一份编码）。 */
+    fun encodeSandbox(vars: List<SandboxVar>): String =
+        JSONArray().apply {
+            vars.forEach { item ->
+                put(JSONObject().put("owner", item.owner).put("key", item.key).put("value", item.value))
+            }
+        }.toString()
+
+    /** JSON → 沙盒变量数组（解不出来就当空）。 */
+    fun decodeSandbox(text: String?): List<SandboxVar> {
+        val array = runCatching { JSONArray(text.orEmpty()) }.getOrNull() ?: return emptyList()
+        return (0 until array.length()).mapNotNull { index ->
+            array.optJSONObject(index)?.let {
+                SandboxVar(it.optString("owner"), it.optString("key"), it.optString("value"))
+            }
+        }
+    }
+
+    /** 值是否为合法 JSON（空串算合法，按 null 存）。 */
+    fun isValidJsonValue(raw: String): Boolean =
+        raw.isBlank() || runCatching { org.json.JSONTokener(raw).nextValue() }.isSuccess
+
     /** JSON → 模板变量数组（缺字段按空串处理）。 */
     fun decodeVars(array: JSONArray?): List<TemplateVar> =
         if (array == null) {
@@ -727,6 +763,7 @@ object ConfigCodec {
                     .put("name", macro.name)
                     .put("body", macro.body)
                     .put("appliesTo", JSONArray(macro.appliesTo.toList()))
+                    .put("templateOnly", JSONArray(macro.templateOnly.toList()))
                     .put("updatedAt", macro.updatedAt),
             )
         }
@@ -844,6 +881,7 @@ object ConfigCodec {
                         name = item.optString("name"),
                         body = item.optString("body"),
                         appliesTo = item.readIdSet("appliesTo"),
+                        templateOnly = item.readIdSet("templateOnly"),
                         updatedAt = item.optLong("updatedAt"),
                     )
             }

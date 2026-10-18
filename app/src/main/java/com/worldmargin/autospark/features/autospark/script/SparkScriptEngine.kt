@@ -86,8 +86,23 @@ object SparkScriptEngine {
         val text: String,
         val sandboxWrites: List<SandboxVar>,
         val sandboxDeletes: List<SandboxVar>,
-        /** `mount` / `unmount` + 宏名。 */
-        val macroOps: List<Pair<String, String>>,
+        /** 宏挂载改动（见 [MacroOp]）。 */
+        val macroOps: List<MacroOp>,
+    )
+
+    /**
+     * 一次宏挂载改动。
+     *
+     * @param kind `mount` / `unmount` / `unmountAll`
+     * @param name 宏名（unmountAll 时为空）
+     * @param targetId 目标会话 id 或模板 id；空表示当前会话
+     * @param inherit 目标是模板时：true = 跟着派生会话一起跑，false = 仅模板自己
+     */
+    data class MacroOp(
+        val kind: String,
+        val name: String,
+        val targetId: String,
+        val inherit: Boolean,
     )
 
     /** 沙盒：脚本不可见任何 Java 类。 */
@@ -235,7 +250,9 @@ object SparkScriptEngine {
                 val item = json.optJSONArray("o")?.optJSONArray(index) ?: return@mapNotNull null
                 val kind = item.optString(0)
                 val name = item.optString(1)
-                if (kind.isBlank() || name.isBlank()) null else kind to name
+                val target = item.optString(2)
+                val inherit = item.optBoolean(3, true)
+                if (kind.isBlank() || name.isBlank()) null else MacroOp(kind, name, target, inherit)
             }
         return Changes(writes, deletes, ops)
     }
@@ -245,7 +262,7 @@ object SparkScriptEngine {
     private data class Changes(
         val writes: List<SandboxVar> = emptyList(),
         val deletes: List<SandboxVar> = emptyList(),
-        val ops: List<Pair<String, String>> = emptyList(),
+        val ops: List<MacroOp> = emptyList(),
     )
 
     /** 结果是列表时按行拼接（一条消息里多行），字符串或其它值直接转字符串。 */
@@ -303,8 +320,9 @@ object SparkScriptEngine {
     val SYSTEM_FUNCTIONS: List<Doc> =
         listOf(
             Doc("getAllConversation", "", "本轮所有会话：[{id,name,remark,days,state,stateText,isGroup}]", "any[]", SYSTEM_OBJ),
-            Doc("mountMacro", "name", "把名为 name 的宏挂到当前会话", "void", SYSTEM_OBJ),
-            Doc("unmountMacro", "name", "从当前会话摘掉名为 name 的宏", "void", SYSTEM_OBJ),
+            Doc("mountMacro", "name, target?", "把宏挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
+            Doc("unmountMacro", "name, target?", "把宏从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
+            Doc("unmountAll", "target?", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
         )
 
     /**
@@ -408,10 +426,28 @@ object SparkScriptEngine {
         }
 
         // 系统接口：会话列表 + 宏挂载
+        // target 可以是：不传（当前会话）/ { conversation: "id" } / { template: "id", inherit: true|false }
+        function __targetOf(target){
+          if (!target) return ["", true];
+          if (typeof target === "string") return [String(target), true];
+          if (target.conversation) return [String(target.conversation), true];
+          if (target.template) return [String(target.template), !(target.inherit === false)];
+          return ["", true];
+        }
         ctx.system = {
           getAllConversation: function(){ return __sb.convs; },
-          mountMacro: function(name){ __sb.ops.push(["mount", String(name)]); },
-          unmountMacro: function(name){ __sb.ops.push(["unmount", String(name)]); }
+          mountMacro: function(name, target){
+            var t = __targetOf(target);
+            __sb.ops.push(["mount", String(name), t[0], t[1]]);
+          },
+          unmountMacro: function(name, target){
+            var t = __targetOf(target);
+            __sb.ops.push(["unmount", String(name), t[0], t[1]]);
+          },
+          unmountAll: function(target){
+            var t = __targetOf(target);
+            __sb.ops.push(["unmountAll", "", t[0], t[1]]);
+          }
         };
         """.trimIndent()
 }

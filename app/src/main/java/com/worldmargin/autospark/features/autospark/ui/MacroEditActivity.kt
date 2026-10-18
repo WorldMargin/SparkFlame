@@ -31,6 +31,8 @@ import java.util.UUID
  */
 class MacroEditActivity : Activity() {
     companion object {
+        private const val REQUEST_SANDBOX = 0x93
+
         const val EXTRA_MACRO_ID = "macro_id"
     }
 
@@ -43,6 +45,11 @@ class MacroEditActivity : Activity() {
     /** 当前选中的生效目标（模板 id 或会话 id）。 */
     private var targets: Set<String> = emptySet()
 
+    private lateinit var sandboxEntry: android.widget.TextView
+
+    /** 这个宏自己的沙盒变量（保存时写回配置）。 */
+    private var sandbox: List<com.worldmargin.autospark.features.autospark.model.SandboxVar> = emptyList()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         macroId = intent.getStringExtra(EXTRA_MACRO_ID)
@@ -50,6 +57,10 @@ class MacroEditActivity : Activity() {
         val macro = config.macros.firstOrNull { it.id == macroId }
         existed = macro != null
         targets = macro?.appliesTo ?: emptySet()
+        sandbox =
+            macroId?.let { id ->
+                config.sandbox.filter { it.owner == "macro:" + id }
+            }.orEmpty()
 
         val root = column().apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
 
@@ -65,6 +76,14 @@ class MacroEditActivity : Activity() {
         root.addView(text("生效目标（可多选：模板或具体会话）", 13f, COLOR_DIM))
         targetsView = column()
         root.addView(targetsView)
+
+        sandboxEntry =
+            text(sandboxLabel(), 13f, COLOR_DIM).apply {
+                setPadding(0, dp(12), 0, dp(4))
+                isClickable = true
+                setOnClickListener { openSandbox() }
+            }
+        root.addView(sandboxEntry)
 
         root.addView(text("宏脚本（在模板脚本之后执行，可改写 " + "\$spark_result\$" + "）", 13f, COLOR_DIM))
         editor =
@@ -162,6 +181,7 @@ class MacroEditActivity : Activity() {
                     appliesTo = targets,
                     updatedAt = now,
                 )
+            val owner = "macro:" + next.id
             config.copy(
                 macros =
                     if (existed) {
@@ -171,10 +191,39 @@ class MacroEditActivity : Activity() {
                         existed = true
                         config.macros + next
                     },
+                sandbox = config.sandbox.filterNot { it.owner == owner } + sandbox.map { it.copy(owner = owner) },
             )
         }
         Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
         finish()
+    }
+
+    private fun sandboxLabel(): String = "沙盒变量（仅这个宏可读写）· " + sandbox.size + " 个"
+
+    /** 打开沙盒变量页（独立一页，和编辑器分开）。 */
+    private fun openSandbox() {
+        val id = macroId ?: UUID.randomUUID().toString().also { macroId = it }
+        startActivityForResult(
+            android.content.Intent(this, SandboxVarsActivity::class.java)
+                .putExtra(SandboxVarsActivity.EXTRA_OWNER, "macro:" + id)
+                .putExtra(SandboxVarsActivity.EXTRA_VARS, com.worldmargin.autospark.features.autospark.model.ConfigCodec.encodeSandbox(sandbox)),
+            REQUEST_SANDBOX,
+        )
+    }
+
+    @Deprecated("Android 里仍可用 startActivityForResult")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: android.content.Intent?,
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_SANDBOX && resultCode == RESULT_OK) {
+            sandbox =
+                com.worldmargin.autospark.features.autospark.model.ConfigCodec
+                    .decodeSandbox(data?.getStringExtra(SandboxVarsActivity.RESULT_VARS))
+            sandboxEntry.text = sandboxLabel()
+        }
     }
 
     private fun confirmDelete() {

@@ -195,7 +195,7 @@ class TemplateEditActivity : Activity() {
         val config = ConfigStore.load(this)
         val body = editor.text
         // 预览与实际执行一致：自定义函数注入 → 模板 → 挂在本模板上的宏
-        val program = config.composeProgram(body, config.macrosFor(listOfNotNull(groupId)))
+        val program = config.composeProgram(body, groupId?.let { config.macrosForTemplate(it) }.orEmpty())
         val sample = SparkPreview.sample(config)
         // 变量用**当前正在编辑的**（还没保存也算），这样改完表达式直接能预览
         val vars = collectVariables()

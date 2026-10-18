@@ -68,6 +68,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".features.autospark.ui.SandboxVarsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".features.autospark.ui.MacroEditActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"

@@ -1314,6 +1314,19 @@ class SparkSettingsActivity : Activity() {
             } else {
                 config.conversationLabel(id)
             }
+        // 会话（派生项）可以直接复制 id，脚本里挂载宏 / 定位会话用得到
+        val idActions =
+            if (isTemplate) {
+                emptyArray()
+            } else {
+                arrayOf(
+                    "复制会话 ID" to {
+                        val clipboard = getSystemService(android.content.ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("会话 ID", id))
+                        android.widget.Toast.makeText(this, "已复制：$id", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
         val ownVars =
             if (isTemplate) {
                 config.group(id)?.variables.orEmpty()
@@ -1324,11 +1337,15 @@ class SparkSettingsActivity : Activity() {
             arrayOf(
                 "更改模板",
                 if (ownVars.isEmpty()) "编辑模板变量" else "编辑模板变量（${ownVars.size} 个）",
-            )
+            ) + idActions.map { it.first }
         AlertDialog
             .Builder(this)
             .setTitle("「$label」")
             .setItems(items) { _, which ->
+                if (which >= 2) {
+                    idActions[which - 2].second.invoke()
+                    return@setItems
+                }
                 if (which == 0) {
                     openTemplateOrConversation(id, isTemplate)
                 } else if (isTemplate) {

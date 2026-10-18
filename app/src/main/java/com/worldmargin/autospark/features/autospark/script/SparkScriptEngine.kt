@@ -21,7 +21,7 @@ class ScriptTimeoutException : RuntimeException("脚本执行超时（可能存�
  * `ctx` 下面按来源分命名空间：
  * - [BUILTIN_OBJ]：内置能力 —— 日期时间等内置变量与 [FUNCTIONS]（`ctx.builtin.pick(...)`）
  * - [IO_OBJ]：宿主数据 —— 从抖音取到的会话信息（`ctx.io.nickname`、`ctx.io.days`…）
- * - [SANDBOX_OBJ]：沙盒变量（跨次运行的 JSON 存储，见 [SandboxEnv]）
+ * - [MACRO_OBJ]：沙盒变量（跨次运行的 JSON 存储，见 [SandboxEnv]）
  * - [SYSTEM_OBJ]：系统接口（会话列表、宏挂载）
  * - [FUNCTIONS_OBJ]：用户自定义函数
  * 另外 [VAR_OBJ] 是模板/会话变量（`ctx.template.<名字>`，含固定的 `template` / `parent_template`）。
@@ -51,8 +51,8 @@ object SparkScriptEngine {
     /** 模板 / 会话变量挂载点：`ctx.template.<名字>`。 */
     const val VAR_OBJ = "template"
 
-    /** 沙盒变量挂载点：`ctx.sandbox.getvar / setvar / deletevar`。 */
-    const val SANDBOX_OBJ = "sandbox"
+    /** 沙盒变量挂载点：`ctx.macro.getvar / setvar / deletevar`。 */
+    const val MACRO_OBJ = "macro"
 
     /** 系统接口挂载点：`ctx.system.getAllConversation / mountMacro / unmountMacro`。 */
     const val SYSTEM_OBJ = "system"
@@ -75,6 +75,10 @@ object SparkScriptEngine {
         val data: Map<String, List<SandboxVar>>,
         /** 本轮可见的会话（`ctx.system.getAllConversation()` 的返回值）。 */
         val conversations: String,
+        /** 这个宏的挂载目标（模板 id / 会话 id 的 JSON 数组）。 */
+        val mountTargets: String = "[]",
+        /** 模板信息 JSON：`{thisid, parent:{id, childs:[{id,name}]}}`。 */
+        val templateInfo: String = "{}",
     ) {
         companion object {
             val EMPTY = SandboxEnv(emptyMap(), "[]")
@@ -174,6 +178,8 @@ object SparkScriptEngine {
             // 沙盒 / 系统接口的底层数据（JS 侧用 JSON.parse 展开）
             val state = cx.newObject(scope)
             ScriptableObject.putProperty(state, "dataJson", sandboxJson(env))
+            ScriptableObject.putProperty(state, "mountJson", env.mountTargets)
+            ScriptableObject.putProperty(state, "tplJson", env.templateInfo)
             ScriptableObject.putProperty(state, "convJson", env.conversations)
             ScriptableObject.putProperty(scope, SANDBOX_STATE_VAR, state)
 
@@ -308,12 +314,14 @@ object SparkScriptEngine {
             Doc("formatDate", "date, pattern", "按 yyyy/MM/dd/HH/mm/ss 格式化日期", "string", BUILTIN_OBJ),
         )
 
-    /** 沙盒与系统接口：挂在 `ctx.sandbox` / `ctx.system` 下。 */
+    /** 沙盒与系统接口：挂在 `ctx.macro` / `ctx.system` 下。 */
     val SANDBOX_FUNCTIONS: List<Doc> =
         listOf(
-            Doc("getvar", "name", "读一个沙盒变量（自己的优先，再找模板的）", "any", SANDBOX_OBJ),
-            Doc("setvar", "name, value", "写一个沙盒变量（值是任意 JS 值，存成 JSON）", "void", SANDBOX_OBJ),
-            Doc("deletevar", "name", "删一个自己创建的沙盒变量", "void", SANDBOX_OBJ),
+            Doc("getvar", "name", "读一个自己的变量", "any", MACRO_OBJ),
+            Doc("setvar", "name, value", "写一个自己的变量（值是任意 JS 值，存成 JSON）", "void", MACRO_OBJ),
+            Doc("deletevar", "name", "删一个自己创建的变量", "boolean", MACRO_OBJ),
+            Doc("getAllMountedTemplate", "", "这个宏挂在哪些模板上（id 数组）", "string[]", MACRO_OBJ),
+            Doc("getAllMountedConversation", "", "这个宏挂在哪些会话上（id 数组）", "string[]", MACRO_OBJ),
         )
 
     /** 系统接口：挂在 `ctx.system` 下。 */
@@ -361,7 +369,7 @@ object SparkScriptEngine {
             "formatDate" to "date: string, pattern?: string",
         )
 
-    /** 全局宏：脚本里以 `ctx.builtin.xxx(...)` / `ctx.sandbox.xxx(...)` / `ctx.system.xxx(...)` 调用。 */
+    /** 全局宏：脚本里以 `ctx.builtin.xxx(...)` / `ctx.macro.xxx(...)` / `ctx.system.xxx(...)` 调用。 */
     private val MACROS =
         """
         // 从数组里随机取一个
@@ -389,10 +397,15 @@ object SparkScriptEngine {
 
         // 沙盒 / 系统接口的展开：Kotlin 侧塞进来的是 JSON 文本
         __sb.data = (__sb.dataJson && __sb.dataJson.length > 1) ? JSON.parse(__sb.dataJson) : {};
+        __sb.mounts = (__sb.mountJson && __sb.mountJson.length > 1) ? JSON.parse(__sb.mountJson) : [];
+        __sb.tpl = (__sb.tplJson && __sb.tplJson.length > 1) ? JSON.parse(__sb.tplJson) : { thisid: "", parent: { id: "", childs: [] } };
+        ctx.template = ctx.template || {};
+        ctx.template.thisid = __sb.tpl.thisid || "";
+        ctx.template.parent = __sb.tpl.parent || { id: "", childs: [] };
         __sb.convs = (__sb.convJson && __sb.convJson.length > 1) ? JSON.parse(__sb.convJson) : [];
         __sb.writes = []; __sb.deletes = []; __sb.ops = []; __sb.owner = "";
 
-        // 沙盒变量：**只给宏用**，归属就是宏自己（模板里 ctx.sandbox 是 undefined）。
+        // 沙盒变量：**只给宏用**，归属就是宏自己（模板里 ctx.macro 是 undefined）。
         // 每个宏执行前，程序里会插一句 __sandboxOwner("macro:<宏 id>")
         function __makeSandbox(owner){
           var api = {
@@ -422,7 +435,7 @@ object SparkScriptEngine {
         }
         function __sandboxOwner(owner){
           __sb.owner = owner;
-          ctx.sandbox = (String(owner).indexOf("macro:") === 0) ? __makeSandbox(owner) : undefined;
+          ctx.macro = (String(owner).indexOf("macro:") === 0) ? __makeSandbox(owner) : undefined;
         }
 
         // 系统接口：会话列表 + 宏挂载
@@ -434,6 +447,9 @@ object SparkScriptEngine {
           if (target.template) return [String(target.template), !(target.inherit === false)];
           return ["", true];
         }
+        ctx.macro.getAllMountedTemplate = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); };
+        ctx.macro.getAllMountedConversation = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); };
+
         ctx.system = {
           getAllConversation: function(){ return __sb.convs; },
           mountMacro: function(name, target){

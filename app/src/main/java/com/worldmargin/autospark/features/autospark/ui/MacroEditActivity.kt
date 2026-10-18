@@ -45,7 +45,7 @@ class MacroEditActivity : Activity() {
     /** 当前选中的生效目标（模板 id 或会话 id）。 */
     private var targets: Set<String> = emptySet()
 
-    private lateinit var sandboxEntry: android.widget.TextView
+    private lateinit var sandboxLabelView: android.widget.TextView
 
     /** 这个宏自己的沙盒变量（保存时写回配置）。 */
     private var sandbox: List<com.worldmargin.autospark.features.autospark.model.SandboxVar> = emptyList()
@@ -77,13 +77,21 @@ class MacroEditActivity : Activity() {
         targetsView = column()
         root.addView(targetsView)
 
-        sandboxEntry =
-            text(sandboxLabel(), 13f, COLOR_DIM).apply {
-                setPadding(0, dp(12), 0, dp(4))
-                isClickable = true
-                setOnClickListener { openSandbox() }
-            }
-        root.addView(sandboxEntry)
+        sandboxLabelView =
+            text(sandboxLabel(), 12f, COLOR_DIM).apply { setPadding(dp(8), dp(10), 0, dp(6)) }
+        root.addView(
+            row().apply {
+                addView(
+                    iconButton(UiKit.Icons.VARIABLE_GROUP, "", compact = true, hint = "沙盒变量") {
+                        openSandbox()
+                    },
+                )
+                addView(
+                    sandboxLabelView,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+            },
+        )
 
         root.addView(text("宏脚本（在模板脚本之后执行，可改写 " + "\$spark_result\$" + "）", 13f, COLOR_DIM))
         editor =
@@ -202,7 +210,7 @@ class MacroEditActivity : Activity() {
                 .orEmpty()
     }
 
-    private fun sandboxLabel(): String = "沙盒变量（仅这个宏可读写）· " + sandbox.size + " 个"
+    private fun sandboxLabel(): String = "沙盒变量 · " + sandbox.size + " 个"
 
     /** 打开沙盒变量页（独立一页，和编辑器分开）。 */
     private fun openSandbox() {
@@ -224,7 +232,7 @@ class MacroEditActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_SANDBOX && resultCode == RESULT_OK) {
             reloadSandbox()
-            sandboxEntry.text = sandboxLabel()
+            sandboxLabelView.text = sandboxLabel()
         }
     }
 

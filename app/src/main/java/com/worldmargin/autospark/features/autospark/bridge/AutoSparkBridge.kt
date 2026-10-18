@@ -91,6 +91,8 @@ object AutoSparkBridge {
         SparkScriptEngine.SandboxEnv(
             data = config.sandbox.groupBy { it.owner },
             conversations = conversationsJson(conversations),
+            mountTargets = mountTargetsJson(config, conversationId),
+            templateInfo = templateInfoJson(config, conversationId),
         )
 
     /** `ctx.system.getAllConversation()` 的返回值（字段少而稳定，不把原始负载带进脚本）。 */
@@ -111,6 +113,41 @@ object AutoSparkBridge {
             )
         }
         return array.toString()
+    }
+
+    /** 这个会话要跑的宏名下的挂载目标（按宏名去重）。 */
+    private fun mountTargetsJson(
+        config: SparkConfig,
+        conversationId: String,
+    ): String {
+        val targets = mutableSetOf<String>()
+        val template = config.conversation(conversationId)
+        config.macrosFor(listOf(conversationId) + listOfNotNull(template?.inheritFrom)).forEach { macro ->
+            targets += macro.appliesTo
+            targets += macro.templateOnly
+        }
+        return org.json.JSONArray(targets.toList()).toString()
+    }
+
+    /** 模板信息：当前模板 id、父模板 id、父模板的派生列表。 */
+    private fun templateInfoJson(
+        config: SparkConfig,
+        conversationId: String,
+    ): String {
+        val template = config.conversation(conversationId)
+        val parentId = template?.inheritFrom.orEmpty()
+        val childs = org.json.JSONArray()
+        config.conversations.filter { it.inheritFrom == parentId }.forEach { child ->
+            childs.put(JSONObject().put("id", child.conversationId).put("name", config.conversationLabel(child.conversationId)))
+        }
+        val parent =
+            JSONObject()
+                .put("id", parentId)
+                .put("childs", childs)
+        return JSONObject()
+            .put("thisid", conversationId)
+            .put("parent", parent)
+            .toString()
     }
 
     /** `ctx.template.template`：当前生效的模板名（空白模板就是「空白模板」）。 */

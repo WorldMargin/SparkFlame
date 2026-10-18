@@ -180,25 +180,40 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 | `ctx.template.template` | string | 当前生效的模板名（空白模板就是「空白模板」） |
 | `ctx.template.parent_template` | string | 父模板名，没有就是空串 |
 
-### 6.4 沙盒变量（只给宏用）
+### 6.4 宏自己的变量（`ctx.macro`，只给宏用）
 
-宏可以用 `ctx.sandbox` 读写**跨次运行保留**的数据，值按 JSON 存进配置（`sandbox` 段）；
-**模板脚本里 `ctx.sandbox` 是 `undefined`**，归属就是宏自己（谁创建谁管理）。
+宏可以用 `ctx.macro` 读写**跨次运行保留**的数据，值按 JSON 存进配置（`sandbox` 段）；
+**模板脚本里 `ctx.macro` 是 `undefined`**，归属就是宏自己（谁创建谁管理）。
 
 | 调用 | 说明 |
 | --- | --- |
-| `ctx.sandbox.getvar(name)` | 读一个键；没有就是 `undefined` |
-| `ctx.sandbox.setvar(name, value)` | 写一个键；`value` 可以是对象 / 数组 / 数字 / 字符串，存成 JSON |
-| `ctx.sandbox.deletevar(name)` | 删一个键（只能删自己创建的） |
+| `ctx.macro.getvar(name)` | 读一个键；没有就是 `undefined` |
+| `ctx.macro.setvar(name, value)` | 写一个键；`value` 可以是对象 / 数组 / 数字 / 字符串，存成 JSON |
+| `ctx.macro.deletevar(name)` | 删一个键（只能删自己创建的） |
 
 键空间按宏隔离：另一个宏读不到这个宏的键；删掉宏时它名下的键也一起清掉。
 
 ```js
 // 宏里：记录这个宏跑过几次
-var n = (ctx.sandbox.getvar("runs") || 0) + 1;
-ctx.sandbox.setvar("runs", n);
+var n = (ctx.macro.getvar("runs") || 0) + 1;
+ctx.macro.setvar("runs", n);
 $spark_result$.push("（第 " + n + " 次加这句）");
 ```
+
+### 6.4.1 宏的挂载信息
+
+| 调用 | 说明 |
+| --- | --- |
+| `ctx.macro.getAllMountedTemplate()` | 这个宏挂在哪些**模板**上（id 数组） |
+| `ctx.macro.getAllMountedConversation()` | 这个宏挂在哪些**会话**上（id 数组） |
+
+### 6.4.2 模板信息（`ctx.template` 里的保留键）
+
+| 名字 | 类型 | 说明 |
+| --- | --- | --- |
+| `ctx.template.thisid` | string | 当前生效模板的 id（会话模板就是会话 id） |
+| `ctx.template.parent.id` | string | 父模板 id（空白模板为 `builtin:blank`） |
+| `ctx.template.parent.childs` | array | 父模板的派生列表：`[{id, name}, ...]` |
 
 ### 6.5 系统接口（`ctx.system`）
 

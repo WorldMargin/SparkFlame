@@ -133,13 +133,16 @@ object AutoSparkBridge {
         macroOps: List<Triple<String, String, String>>,
     ) {
         if (writes.isEmpty() && deletes.isEmpty() && macroOps.isEmpty()) return
-        val sandbox = config.sandbox.toMutableList()
+        // 重新读一次：这一轮里 markSent 已经改过配置，
+        // 拿跑步时的快照写回会把「今日已发」覆盖掉
+        val latest = ConfigClient.read(context) ?: config
+        val sandbox = latest.sandbox.toMutableList()
         writes.forEach { write ->
             val index = sandbox.indexOfFirst { it.owner == write.owner && it.key == write.key }
             if (index >= 0) sandbox[index] = write else sandbox += write
         }
         deletes.forEach { (owner, key) -> sandbox.removeAll { it.owner == owner && it.key == key } }
-        var macros = config.macros
+        var macros = latest.macros
         macroOps.forEach { (kind, name, conversationId) ->
             val index = macros.indexOfFirst { it.name == name }
             if (index < 0) return@forEach
@@ -148,7 +151,7 @@ object AutoSparkBridge {
             if (kind == "mount") targets += conversationId else targets -= conversationId
             macros = macros.toMutableList().also { it[index] = macro.copy(appliesTo = targets) }
         }
-        val updated = config.copy(sandbox = sandbox, macros = macros)
+        val updated = latest.copy(sandbox = sandbox, macros = macros)
         if (!ConfigClient.write(context, updated)) {
             ModLog.w("脚本沙盒 / 宏挂载写入失败")
         }

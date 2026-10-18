@@ -422,7 +422,7 @@ class MonacoSparkEditor(
     }
 
     private companion object {
-        const val ENTRY_URL = "https://appassets.androidplatform.net/assets/monaco/index.html"
+        const val ENTRY_URL = "https://appassets.androidplatform.net/assets/cm6/index.html"
         const val BACKGROUND = 0xFFFFFFFF.toInt()
     }
 }

@@ -11,13 +11,13 @@
 
         <!-- 配置跨进程通道：管理界面（模块进程）写，宿主（抖音进程）读 -->
         <provider
-            android:name=".features.autospark.provider.ConfigProvider"
+            android:name=".app.provider.ConfigProvider"
             android:authorities="io.github.worldmargin.sparkflame.config"
             android:exported="true" />
 
         <!-- 宿主写配置前先唤醒本模块进程（见 WakeReceiver 注释），否则 provider 调不通 -->
         <receiver
-            android:name=".features.autospark.provider.WakeReceiver"
+            android:name=".app.provider.WakeReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.worldmargin.autospark.action.WAKE" />
@@ -38,7 +38,7 @@
 
         <!-- 续火花管理界面：桌面图标入口 + 抖音设置页注入入口（由抖音进程唤起，故需 exported） -->
         <activity
-            android:name=".features.autospark.ui.SparkSettingsActivity"
+            android:name=".app.ui.settings.SparkSettingsActivity"
             android:exported="true"
             android:label="@string/spark_name"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
@@ -49,43 +49,43 @@
         </activity>
 
         <activity
-            android:name=".features.autospark.ui.TemplateEditActivity"
+            android:name=".app.ui.template.TemplateEditActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
 
         <!-- 模板变量：一行一个（名字 + 两三行高的小 Monaco），结果回传给模板编辑页 -->
         <activity
-            android:name=".features.autospark.ui.VariableListActivity"
+            android:name=".app.ui.variable.VariableListActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".features.autospark.ui.ConversationEditActivity"
+            android:name=".app.ui.conversation.ConversationEditActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".features.autospark.ui.SandboxVarsActivity"
+            android:name=".app.ui.macro.SandboxVarsActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".features.autospark.ui.MacroEditActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
-            android:windowSoftInputMode="adjustResize" />
-
-        <activity
-            android:name=".features.autospark.ui.FunctionEditActivity"
+            android:name=".app.ui.macro.MacroEditActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".features.autospark.ui.DocsActivity"
+            android:name=".app.ui.function.FunctionEditActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".app.ui.settings.DocsActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />

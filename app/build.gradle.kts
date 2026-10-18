@@ -33,8 +33,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // 固定版本号：历史压缩后提交数会变小，不能再拿它当 versionCode（会触发降级安装失败）
-        versionCode = 10800
-        versionName = "v1.4.3"
+        versionCode = 10900
+        versionName = "v1.4.4"
     }
 
     // 按 ABI 分包：arm64-v8a / armeabi-v7a 各出一个 APK

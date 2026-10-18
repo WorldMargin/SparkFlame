@@ -2168,11 +2168,6 @@ class SparkSettingsActivity : Activity() {
             },
         )
         body.addView(
-            menuRow(UiKit.Icons.CODE, "编辑器", if (true) "Monaco（VSCode 同款）" else "原生编辑器") {
-                openSubPage(SUB_EDITOR)
-            },
-        )
-        body.addView(
             menuRow(UiKit.Icons.SERVER, "宿主状态", hostSummary(config)) {
                 openSubPage(SUB_HOST)
             },

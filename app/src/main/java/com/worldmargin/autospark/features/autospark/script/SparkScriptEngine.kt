@@ -433,10 +433,28 @@ object SparkScriptEngine {
           };
           return api;
         }
-        function __sandboxOwner(owner){
-          __sb.owner = owner;
-          ctx.macro = (String(owner).indexOf("macro:") === 0) ? __makeSandbox(owner) : undefined;
+        // ctx.macro 始终存在（否则宏定义脚本里赋值就报 undefined），但只有宏段能用
+        ctx.macro = {
+          getvar: function(name){ return __requireMacro().getvar(name); },
+          setvar: function(name, value){ return __requireMacro().setvar(name, value); },
+          deletevar: function(name){ return __requireMacro().deletevar(name); },
+          getAllMountedTemplate: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); },
+          getAllMountedConversation: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); }
+        };
+        function __requireMacro(){
+          if (String(__sb.owner).indexOf("macro:") !== 0) {
+            throw new Error("ctx.macro 的读写只能在宏脚本里用");
+          }
+          var owner = __sb.owner;
+          var own = __sb.data[owner];
+          if (!own) { own = {}; __sb.data[owner] = own; }
+          return {
+            getvar: function(name){ name = String(name); return Object.prototype.hasOwnProperty.call(own, name) ? own[name] : undefined; },
+            setvar: function(name, value){ name = String(name); own[name] = value; __sb.writes.push([owner, name, JSON.stringify(value === undefined ? null : value)]); },
+            deletevar: function(name){ name = String(name); if (Object.prototype.hasOwnProperty.call(own, name)) { delete own[name]; __sb.deletes.push([owner, name]); return true; } return false; }
+          };
         }
+        function __sandboxOwner(owner){ __sb.owner = owner; }
 
         // 系统接口：会话列表 + 宏挂载
         // target 可以是：不传（当前会话）/ { conversation: "id" } / { template: "id", inherit: true|false }
@@ -447,9 +465,6 @@ object SparkScriptEngine {
           if (target.template) return [String(target.template), !(target.inherit === false)];
           return ["", true];
         }
-        ctx.macro.getAllMountedTemplate = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); };
-        ctx.macro.getAllMountedConversation = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); };
-
         ctx.system = {
           getAllConversation: function(){ return __sb.convs; },
           mountMacro: function(name, target){

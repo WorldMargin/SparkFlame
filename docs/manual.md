@@ -502,7 +502,7 @@ $spark_result$.push("（元旦还有 " + ctx.builtin.countdown("2027-01-01") + "
 ctx.template（模板/会话变量）、ctx.functions（自定义函数）—— 不要写成 ctx.name 这种旧写法。
 脚本通过 $spark_result$.push("...") 逐行添加内容，多行会被拼成一条消息，空列表表示这条不发。
 可用对象：ctx.builtin.date/time/weekday/timestamp/nickname/remark/name/days/state/stateText/peerUid/conversationId，
-ctx.template.<变量名>，以及 ctx.builtin.pick/pad/repeat/random/shuffle/countdown/nextNewYear/untilNewYear/formatDate。
+ctx.template.vars.<变量名>，以及 ctx.builtin.pick/pad/repeat/random/shuffle/countdown/nextNewYear/untilNewYear/formatDate。
 限制：只能用 var 与字符串拼接（ES5），只能用 Math/JSON/Date/Array/String 常规方法，不能有死循环。
 要求：1~2 行、口语化、每天有变化（用 ctx.builtin.pick）、对 ctx.io.days 与变量做兜底、不写死昵称。
 请先告诉我你打算放哪些变量（名字 + 表达式），再给出模板脚本与（可选的）宏脚本。

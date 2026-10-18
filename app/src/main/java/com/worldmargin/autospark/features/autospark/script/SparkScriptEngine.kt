@@ -79,6 +79,15 @@ object SparkScriptEngine {
         val mountTargets: String = "[]",
         /** 模板信息 JSON：`{thisid, parent:{id, childs:[{id,name}]}}`。 */
         val templateInfo: String = "{}",
+        /** 宏 id → 宏名的 JSON（`ctx.macro.name` 用）。 */
+        val macroNames: String = "{}",
+        /** 按 id 取信息的数据：`{conversations:{id:..}, templates:{id:..}, macros:{id:..}}`。 */
+        val info: String = "{}",
+        /**
+         * 预览 / 试算模式：**不触发任何会改数据的动作**
+         *（写变量、删变量、挂载 / 摘掉宏），只把文案算出来。
+         */
+        val preview: Boolean = false,
     ) {
         companion object {
             val EMPTY = SandboxEnv(emptyMap(), "[]")
@@ -131,7 +140,7 @@ object SparkScriptEngine {
     fun render(
         script: String,
         values: Map<String, Any?>,
-    ): String = renderFull(script, values, SandboxEnv.EMPTY, "", "").text
+    ): String = renderFull(script, values, SandboxEnv.EMPTY.copy(preview = true), "", "").text
 
     /**
      * 执行脚本，取回文案与沙盒改动。
@@ -180,6 +189,9 @@ object SparkScriptEngine {
             ScriptableObject.putProperty(state, "dataJson", sandboxJson(env))
             ScriptableObject.putProperty(state, "mountJson", env.mountTargets)
             ScriptableObject.putProperty(state, "tplJson", env.templateInfo)
+            ScriptableObject.putProperty(state, "namesJson", env.macroNames)
+            ScriptableObject.putProperty(state, "infoJson", env.info)
+            ScriptableObject.putProperty(state, "preview", env.preview)
             ScriptableObject.putProperty(state, "convJson", env.conversations)
             ScriptableObject.putProperty(scope, SANDBOX_STATE_VAR, state)
 
@@ -317,6 +329,7 @@ object SparkScriptEngine {
     /** 沙盒与系统接口：挂在 `ctx.macro` / `ctx.system` 下。 */
     val SANDBOX_FUNCTIONS: List<Doc> =
         listOf(
+            Doc("name", "", "当前宏的名字（模板段为空串）", "string", MACRO_OBJ),
             Doc("getvar", "name", "读一个自己的变量", "any", MACRO_OBJ),
             Doc("setvar", "name, value", "写一个自己的变量（值是任意 JS 值，存成 JSON）", "void", MACRO_OBJ),
             Doc("deletevar", "name", "删一个自己创建的变量", "boolean", MACRO_OBJ),
@@ -328,6 +341,9 @@ object SparkScriptEngine {
     val SYSTEM_FUNCTIONS: List<Doc> =
         listOf(
             Doc("getAllConversation", "", "本轮所有会话：[{id,name,remark,days,state,stateText,isGroup}]", "any[]", SYSTEM_OBJ),
+            Doc("getConversation", "id", "按会话 id 取信息结构（没有返回 null）", "any", SYSTEM_OBJ),
+            Doc("getTemplate", "id", "按模板 id 取信息结构（id/name/body/childs/isBuiltin）", "any", SYSTEM_OBJ),
+            Doc("getMacro", "id", "按宏 id 取信息结构（id/name/body/templates/conversations）", "any", SYSTEM_OBJ),
             Doc("mountMacro", "name, target?", "把宏挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
             Doc("unmountMacro", "name, target?", "把宏从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
             Doc("unmountAll", "target?", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
@@ -400,8 +416,8 @@ object SparkScriptEngine {
         __sb.mounts = (__sb.mountJson && __sb.mountJson.length > 1) ? JSON.parse(__sb.mountJson) : [];
         __sb.tpl = (__sb.tplJson && __sb.tplJson.length > 1) ? JSON.parse(__sb.tplJson) : { thisid: "", parent: { id: "", childs: [] } };
         ctx.template = ctx.template || {};
-        ctx.template.thisid = __sb.tpl.thisid || "";
-        ctx.template.parent = __sb.tpl.parent || { id: "", childs: [] };
+        ctx.template.template = __sb.tpl.template || { id: "", name: "" };
+        ctx.template.parent = __sb.tpl.parent || { id: "", name: "", childs: [] };
         __sb.convs = (__sb.convJson && __sb.convJson.length > 1) ? JSON.parse(__sb.convJson) : [];
         __sb.writes = []; __sb.deletes = []; __sb.ops = []; __sb.owner = "";
 
@@ -433,9 +449,33 @@ object SparkScriptEngine {
           };
           return api;
         }
+        // ctx.macro 始终存在（否则宏定义脚本里赋值就报 undefined），但只有宏段能用
+        ctx.macro = {
+          getvar: function(name){ return __requireMacro().getvar(name); },
+          setvar: function(name, value){ return __requireMacro().setvar(name, value); },
+          deletevar: function(name){ return __requireMacro().deletevar(name); },
+          getAllMountedTemplate: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); },
+          getAllMountedConversation: function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); },
+          __reserved: true
+        };
+        function __requireMacro(){
+          if (String(__sb.owner).indexOf("macro:") !== 0) {
+            throw new Error("ctx.macro 的读写只能在宏脚本里用");
+          }
+          var owner = __sb.owner;
+          var own = __sb.data[owner];
+          if (!own) { own = {}; __sb.data[owner] = own; }
+          return {
+            getvar: function(name){ name = String(name); return Object.prototype.hasOwnProperty.call(own, name) ? own[name] : undefined; },
+            setvar: function(name, value){ if (__sb.preview) return; name = String(name); own[name] = value; __sb.writes.push([owner, name, JSON.stringify(value === undefined ? null : value)]); },
+            deletevar: function(name){ if (__sb.preview) return false; name = String(name); if (Object.prototype.hasOwnProperty.call(own, name)) { delete own[name]; __sb.deletes.push([owner, name]); return true; } return false; }
+          };
+        }
+        __sb.names = (__sb.namesJson && __sb.namesJson.length > 1) ? JSON.parse(__sb.namesJson) : {};
+        __sb.preview = __sb.preview === true;
         function __sandboxOwner(owner){
           __sb.owner = owner;
-          ctx.macro = (String(owner).indexOf("macro:") === 0) ? __makeSandbox(owner) : undefined;
+          ctx.macro.name = (String(owner).indexOf("macro:") === 0) ? (__sb.names[String(owner).substring(6)] || "") : "";
         }
 
         // 系统接口：会话列表 + 宏挂载
@@ -447,20 +487,29 @@ object SparkScriptEngine {
           if (target.template) return [String(target.template), !(target.inherit === false)];
           return ["", true];
         }
-        ctx.macro.getAllMountedTemplate = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") < 0; }); };
-        ctx.macro.getAllMountedConversation = function(){ return (__sb.mounts || []).filter(function(t){ return t.indexOf(":") >= 0; }); };
-
+        __sb.info = (__sb.infoJson && __sb.infoJson.length > 1) ? JSON.parse(__sb.infoJson) : {};
+        function __lookup(kind, id){
+          var table = __sb.info[kind] || {};
+          var hit = table[String(id)];
+          return hit || null;
+        }
         ctx.system = {
           getAllConversation: function(){ return __sb.convs; },
+          getConversation: function(id){ return __lookup("conversations", id); },
+          getTemplate: function(id){ return __lookup("templates", id); },
+          getMacro: function(id){ return __lookup("macros", id); },
           mountMacro: function(name, target){
+            if (__sb.preview) return;
             var t = __targetOf(target);
             __sb.ops.push(["mount", String(name), t[0], t[1]]);
           },
           unmountMacro: function(name, target){
+            if (__sb.preview) return;
             var t = __targetOf(target);
             __sb.ops.push(["unmount", String(name), t[0], t[1]]);
           },
           unmountAll: function(target){
+            if (__sb.preview) return;
             var t = __targetOf(target);
             __sb.ops.push(["unmountAll", "", t[0], t[1]]);
           }

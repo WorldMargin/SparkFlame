@@ -34,16 +34,16 @@ object SparkTypeScript {
         builder.append("interface SparkTemplateParent {\n")
         builder.append("\t/** 父模板 id（空白模板为 builtin:blank） */\n")
         builder.append("\tid: string;\n")
+        builder.append("\t/** 父模板名 */\n")
+        builder.append("\tname: string;\n")
         builder.append("\t/** 父模板的派生列表 */\n")
         builder.append("\tchilds: Array<{ id: string; name: string }>;\n")
         builder.append("}\n")
         builder.append("interface SparkTemplate {\n")
-        builder.append("\t/** 当前生效的模板名 */\n")
-        builder.append("\t").append(SparkScriptEngine.VAR_TEMPLATE).append(": string;\n")
-        builder.append("\t/** 父模板名（没有父模板时为空串） */\n")
-        builder.append("\t").append(SparkScriptEngine.VAR_PARENT_TEMPLATE).append(": string;\n")
-        builder.append("\t/** 当前模板（会话模板 / 模板）的 id */\n")
-        builder.append("\tthisid: string;\n")
+
+
+        builder.append("\t/** 当前模板（会话模板 / 模板） */\n")
+        builder.append("\ttemplate: { id: string; name: string };\n")
         builder.append("\t/** 父模板信息 */\n")
         builder.append("\tparent: SparkTemplateParent;\n")
         builder.append("\t/** 变量都在 ctx.template.vars 下 */\n")
@@ -56,7 +56,6 @@ object SparkTypeScript {
             builder.append("\t").append(property(variable.name)).append(": any;\n")
         }
         builder.append("}\n")
-        builder.append("interface SparkBuiltin {\n")
         builder.append("interface SparkVars {\n")
         builder.append("\t/** 变量名 → 求值结果；没声明的名字也能读（值为 undefined） */\n")
         builder.append("\t[key: string]: any;\n")
@@ -65,6 +64,7 @@ object SparkTypeScript {
             builder.append("\t").append(property(variable.name)).append(": any;\n")
         }
         builder.append("}\n")
+        builder.append("interface SparkBuiltin {\n")
         SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.BUILTIN_OBJ }.forEach { variable ->
             builder.append("\t/** ").append(escape(variable.desc)).append(" */\n")
             builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")
@@ -87,7 +87,9 @@ object SparkTypeScript {
             builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")
         }
         builder.append("}\n")
-        builder.append("interface SparkSandbox {\n")
+        builder.append("interface SparkMacro {\n")
+        builder.append("\t/** 当前宏的名字（模板段为空串） */\n")
+        builder.append("\tname: string;\n")
         SparkScriptEngine.SANDBOX_FUNCTIONS.forEach { function ->
             builder.append("\t/** ").append(escape(function.desc)).append(" */\n")
             builder.append("\t").append(function.name).append('(').append(function.params).append("): any;\n")
@@ -105,8 +107,8 @@ object SparkTypeScript {
         builder.append("\tbuiltin: SparkBuiltin;\n")
         builder.append("\t/** 宿主数据：抖音给的会话信息 */\n")
         builder.append("\tio: SparkIo;\n")
-        builder.append("\t/** 沙盒变量：只在宏里有（模板里为 undefined） */\n")
-        builder.append("\tsandbox?: SparkSandbox;\n")
+        builder.append("\t/** 宏自己的变量与挂载查询 */\n")
+        builder.append("\tmacro: SparkMacro;\n")
         builder.append("\t/** 系统接口：会话列表与宏挂载 */\n")
         builder.append("\tsystem: SparkSystem;\n")
         builder.append("\t/** 自定义函数（在「宏/函数」页定义） */\n")

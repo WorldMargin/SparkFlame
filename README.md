@@ -52,8 +52,11 @@
 - **自定义函数**：全局定义，执行前注入成 `ctx.functions.<名字>`，供模板 / 宏 / 变量调用
 - **脚本上下文**（按来源分命名空间）：
   `ctx.builtin`（日期时间 + 内置函数）、`ctx.io`（抖音给的会话数据）、
-  `ctx.template.vars`（模板 / 会话变量）+ 模板信息固定键、`ctx.macro`（宏自己的变量与挂载查询）、
-  `ctx.system`（会话列表与宏挂载）、`ctx.functions`（自定义函数）；都有类型声明与补全
+  `ctx.template.vars`（模板 / 会话变量）、`ctx.template.template` / `.parent`（当前模板：`{id,name}`）、
+  `ctx.macro`（宏自己的变量 + `name` + 挂载查询）、
+  `ctx.system`（`getAllConversation()`、`getConversation/getTemplate/getMacro(id)`、`mountMacro/unmountMacro/unmountAll`）、
+  `ctx.functions`（自定义函数）；都有类型声明与补全
+  预览 / 试算只算文案：写变量、挂载宏这类会改数据的调用在预览时自动跳过
 - **编辑器**：Monaco（VSCode 同款，离线内置）—— `ctx.*` 与 JS 内置成员的补全、类型检查、
   悬浮文档、格式化、双指缩放字号；长按弹**悬浮图标条**（全选 / 复制 / 粘贴 / 撤销）；也可在设置里切回原生编辑器
 - **预览**：用真实会话快照渲染一遍，与实际发送走同一套组装

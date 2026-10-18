@@ -75,21 +75,22 @@
 - 不要给 $spark_result$ 赋字符串（`= "…"`）；引擎虽然兼容，但统一用 push，类型和补全都更准。
 - $spark_result$ 为空列表 = 这条不发。除了它，脚本不需要 print / return。
 
-【可用变量（ctx.*）】
-date        字符串  当天日期，yyyy-MM-dd
-time        字符串  当前时间，HH:mm
-weekday     字符串  星期几
-timestamp   数字    当前毫秒时间戳
-nickname    字符串  对方昵称
-remark      字符串  备注名（可能为空）
-name        字符串  显示名（备注优先，其次昵称）
-days        数字    已连续聊天天数
-state       数字    火花状态码：1=今天已互动 2=今天还没互动 3=待重燃
-stateText   字符串  火花状态文本
-peerUid     字符串  对方 UID
-conversationId 字符串 会话 ID
+【可用变量】
+ctx.builtin.date        字符串  当天日期，yyyy-MM-dd
+ctx.builtin.time        字符串  当前时间，HH:mm
+ctx.builtin.weekday     字符串  星期几
+ctx.builtin.timestamp   数字    当前毫秒时间戳
+ctx.io.nickname         字符串  对方昵称
+ctx.io.remark           字符串  备注名（可能为空）
+ctx.io.name             字符串  显示名（备注优先，其次昵称）
+ctx.io.days             数字    已连续聊天天数
+ctx.io.state            数字    火花状态码：1=今天已互动 2=今天还没互动 3=待重燃
+ctx.io.stateText        字符串  火花状态文本
+ctx.io.peerUid          字符串  对方 UID
+ctx.io.conversationId   字符串  会话 ID
+ctx.template.vars.<名字>  任意    模板 / 会话变量（没定义就是 null）
 
-【可用函数（ctx.*）】
+【可用函数】
 ctx.builtin.pick(list)               从数组里随机取一个
 ctx.builtin.pad(n)                   数字补零到两位
 ctx.builtin.repeat(s, n)             把字符串 s 重复 n 次
@@ -135,7 +136,56 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 
 ## 六、脚本 API 参考
 
-### 6.1 输出与契约
+### 6.1 上下文结构总表
+
+脚本能见的东西全在这里（「预览」列：✅ = 正常生效，⚠️ = 预览 / 试算时**不生效**）。
+
+| 路径 | 类型 | 说明 | 预览 |
+| --- | --- | --- | --- |
+| `$spark_result$` | string[] | 要发的文案，逐行 push；空列表 = 不发 | ✅ |
+| `ctx.builtin.date` | string | 当天日期 `yyyy-MM-dd` | ✅ |
+| `ctx.builtin.time` | string | 当前时间 `HH:mm` | ✅ |
+| `ctx.builtin.weekday` | string | 星期几 | ✅ |
+| `ctx.builtin.timestamp` | number | 当前毫秒时间戳 | ✅ |
+| `ctx.builtin.pick(list)` | any | 从数组里随机取一个 | ✅ |
+| `ctx.builtin.pad(n)` | string | 数字补零到两位 | ✅ |
+| `ctx.builtin.repeat(s, n)` | string | 把字符串 s 重复 n 次 | ✅ |
+| `ctx.builtin.random(a, b)` | number | `[a, b)` 区间内的随机整数 | ✅ |
+| `ctx.builtin.shuffle(list)` | any[] | 洗牌，返回新数组 | ✅ |
+| `ctx.builtin.countdown(target)` | number | 距目标日期还有几天（已过为负） | ✅ |
+| `ctx.builtin.nextNewYear()` | string | 下一个元旦的日期字符串 | ✅ |
+| `ctx.builtin.untilNewYear()` | number | 距下一个元旦还有几天 | ✅ |
+| `ctx.builtin.formatDate(date, pattern)` | string | 按 `yyyy/MM/dd/HH/mm/ss` 格式化日期 | ✅ |
+| `ctx.io.nickname` | string | 对方昵称 | ✅ |
+| `ctx.io.remark` | string | 备注名（可能为空） | ✅ |
+| `ctx.io.name` | string | 显示名（备注优先，其次昵称） | ✅ |
+| `ctx.io.days` | number | 已连续聊天天数 | ✅ |
+| `ctx.io.state` | number | 火花状态码（1 今天已互动 / 2 今天还没互动 / 3 待重燃） | ✅ |
+| `ctx.io.stateText` | string | 火花状态文本 | ✅ |
+| `ctx.io.peerUid` | string | 对方 UID | ✅ |
+| `ctx.io.conversationId` | string | 会话 ID（挂载宏 / 定位会话用） | ✅ |
+| `ctx.template.vars.<名字>` | any | 模板 / 会话变量（合并后）；没定义就是 `null` | ✅ |
+| `ctx.template.template` | object | 当前模板：`{ id, name }` | ✅ |
+| `ctx.template.parent` | object | 父模板：`{ id, name, childs: [{id,name}] }` | ✅ |
+| `ctx.system.getConversation(id)` | object | 按会话 id 取信息：`{id,name,remark,days,state,stateText,isGroup,template,parent,macros}` | ✅ |
+| `ctx.system.getTemplate(id)` | object | 按模板 id 取信息：`{id,name,body,childs,isBuiltin}` | ✅ |
+| `ctx.system.getMacro(id)` | object | 按宏 id 取信息：`{id,name,body,templates,conversations}` | ✅ |
+| `ctx.macro.name` | string | 当前宏的名字（模板段为空串） | ✅ |
+| `ctx.macro.getvar(name)` | any | 读自己的一个变量 | ✅ |
+| `ctx.macro.setvar(name, value)` | void | 写一个变量（值按 JSON 存） | ⚠️ |
+| `ctx.macro.deletevar(name)` | boolean | 删一个自己创建的变量 | ⚠️ |
+| `ctx.macro.getAllMountedTemplate()` | string[] | 这个宏挂在哪些模板上 | ✅ |
+| `ctx.macro.getAllMountedConversation()` | string[] | 这个宏挂在哪些会话上 | ✅ |
+| `ctx.system.getAllConversation()` | array | 本轮会话数组 `{id, name, remark, days, state, stateText, isGroup}` | ✅ |
+| `ctx.system.mountMacro(name, target?)` | void | 把宏挂到指定会话 / 模板 | ⚠️ |
+| `ctx.system.unmountMacro(name, target?)` | void | 从指定目标摘掉宏 | ⚠️ |
+| `ctx.system.unmountAll(target?)` | void | 摘掉目标上所有宏 | ⚠️ |
+| `ctx.functions.<名字>(...)` | any | 自定义函数（「宏/函数」页里定义） | ✅ |
+
+> 预览 / 试算只算文案，**不会改任何数据**：`setvar` / `deletevar` / `mountMacro` / `unmountMacro` / `unmountAll`
+> 在预览时直接跳过（不报错、也不写盘），只有真正发送那一轮才会生效。
+
+### 6.2 输出与契约
 
 - 语言：JavaScript（Rhino 沙盒，无 Java / DOM / 网络，单次 2 秒超时）。
 - **输出变量 `$spark_result$`（`string[]`）**：引擎在脚本执行前初始化为**空列表** `[]`，用 `$spark_result$.push("每行内容")` 逐行添加。
@@ -146,7 +196,7 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 - 结果是**列表**时按行拼接成一条消息；**空**表示这条不发。
 - 脚本里不要做重活（2 秒上限，超时按失败处理）。
 
-### 6.2 变量
+### 6.3 变量
 
 上下文按**来源**分几个命名空间：`ctx.builtin`（内置能力，引擎自己算的）、
 `ctx.io`（抖音给的数据）、`ctx.template`（模板 / 会话变量）、`ctx.functions`（自定义函数）。
@@ -173,20 +223,21 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 | `ctx.io.peerUid` | string | 对方 UID |
 | `ctx.io.conversationId` | string | 会话 ID |
 
-### 6.3 模板变量与固定键
+### 6.4 模板变量与固定键
 
 自己定义的变量（模板层 + 会话层合并后）都在 **`ctx.template.vars`** 下：`ctx.template.vars.名字`。
 下面这几个是固定键，不会被变量名占用：
 
 | 名字 | 类型 | 说明 |
 | --- | --- | --- |
-| `ctx.template.template` | string | 当前生效的模板名（空白模板就是「空白模板」） |
-| `ctx.template.parent_template` | string | 父模板名，没有就是空串 |
+| `ctx.template.template` | object | 当前模板：`{ id, name }` |
+| `ctx.template.parent` | object | 父模板：`{ id, name, childs }`；`childs` 是派生列表 `[{id,name}]` |
 
-### 6.4 宏自己的变量（`ctx.macro`，只给宏用）
+### 6.5 宏自己的变量（`ctx.macro`，只给宏用）
 
-宏可以用 `ctx.macro` 读写**跨次运行保留**的数据，值按 JSON 存进配置（`sandbox` 段）；
-**模板脚本里 `ctx.macro` 是 `undefined`**，归属就是宏自己（谁创建谁管理）。
+宏可以用 `ctx.macro` 读写**跨次运行保留**的数据，值按 JSON 存进配置（`sandbox` 段），归属就是宏自己（谁创建谁管理）。
+`ctx.macro` 在模板段也存在，但**只有宏段能读写**：模板里调 `getvar` / `setvar` / `deletevar` 会报
+「ctx.macro 的读写只能在宏脚本里用」。
 
 | 调用 | 说明 |
 | --- | --- |
@@ -203,26 +254,21 @@ ctx.macro.setvar("runs", n);
 $spark_result$.push("（第 " + n + " 次加这句）");
 ```
 
-### 6.4.1 宏的挂载信息
+### 6.5.1 宏的挂载信息
 
 | 调用 | 说明 |
 | --- | --- |
 | `ctx.macro.getAllMountedTemplate()` | 这个宏挂在哪些**模板**上（id 数组） |
 | `ctx.macro.getAllMountedConversation()` | 这个宏挂在哪些**会话**上（id 数组） |
 
-### 6.4.2 模板信息（`ctx.template` 里的保留键）
-
-| 名字 | 类型 | 说明 |
-| --- | --- | --- |
-| `ctx.template.thisid` | string | 当前生效模板的 id（会话模板就是会话 id） |
-| `ctx.template.parent.id` | string | 父模板 id（空白模板为 `builtin:blank`） |
-| `ctx.template.parent.childs` | array | 父模板的派生列表：`[{id, name}, ...]` |
-
-### 6.5 系统接口（`ctx.system`）
+### 6.6 系统接口（`ctx.system`）
 
 | 调用 | 说明 |
 | --- | --- |
 | `ctx.system.getAllConversation()` | 本轮可见的会话数组：`{id, name, remark, days, state, stateText, isGroup}` |
+| `ctx.system.getConversation(id)` | 按会话 id 取：`{id,name,remark,days,state,stateText,isGroup,template:{id,name,body},parent:{id,name,body},macros:[{id,name}]}` |
+| `ctx.system.getTemplate(id)` | 按模板 id 取：`{id,name,body,childs:[{id,name}],isBuiltin}` |
+| `ctx.system.getMacro(id)` | 按宏 id 取：`{id,name,body,templates:[id],conversations:[id]}` |
 | `ctx.system.mountMacro(name, target?)` | 把宏挂到指定目标（不传 = 当前会话） |
 | `ctx.system.unmountMacro(name, target?)` | 从指定目标摘掉这个宏 |
 | `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
@@ -241,7 +287,7 @@ ctx.system.unmountAll();                                        // 把当前会�
 会话列表来自本轮扫描的结果，不额外请求网络；宏挂载在这一轮跑完后统一写回配置，**下一轮生效**。
 手动管理：宏编辑页里的「沙盒变量」一行点进去，可改名 / 改 JSON 值 / 删除 / 新增（单独一页，不和脚本编辑器挤在一起）。
 
-### 6.6 内置函数（`ctx.builtin`）
+### 6.7 内置函数（`ctx.builtin`）
 
 | 调用 | 返回 | 说明 |
 | --- | --- | --- |
@@ -256,7 +302,7 @@ ctx.system.unmountAll();                                        // 把当前会�
 | `ctx.builtin.formatDate(date, pattern)` | string | 按 `yyyy/MM/dd/HH/mm/ss` 格式化日期 |
 | `ctx.template.vars.名字` | 模板变量（见下方「模板变量」）。值是 JS 表达式，未定义则取父模板的值 |
 
-### 6.7 自定义函数
+### 6.8 自定义函数
 
 在 **宏/函数 → 函数** 页里**直接写完整函数声明**（只允许一个函数），保存时自动解析出函数名与形参，
 注入成 `ctx.functions.<名字>`：
@@ -499,9 +545,11 @@ $spark_result$.push("（元旦还有 " + ctx.builtin.countdown("2027-01-01") + "
 模块工作方式：每次发送时先合并两层变量（父模板 → 会话，同名覆盖、空值回落、都没有为 null），
 再注入自定义函数 ctx.functions.*，然后执行模板脚本，最后执行挂载的宏；
 上下文按来源分命名空间：ctx.builtin（内置变量与函数）、ctx.io（抖音给的会话数据）、
-ctx.template（模板/会话变量）、ctx.functions（自定义函数）—— 不要写成 ctx.name 这种旧写法。
+ctx.template.vars（模板/会话变量），ctx.template.template / .parent（当前模板信息）、
+ctx.macro（当前宏的变量与名字）、ctx.system（会话与挂载）、ctx.functions（自定义函数）—— 不要写成 ctx.name 这种旧写法。
 脚本通过 $spark_result$.push("...") 逐行添加内容，多行会被拼成一条消息，空列表表示这条不发。
-可用对象：ctx.builtin.date/time/weekday/timestamp/nickname/remark/name/days/state/stateText/peerUid/conversationId，
+可用对象：ctx.builtin.date/time/weekday/timestamp，
+ctx.io.nickname/remark/name/days/state/stateText/peerUid/conversationId，
 ctx.template.vars.<变量名>，以及 ctx.builtin.pick/pad/repeat/random/shuffle/countdown/nextNewYear/untilNewYear/formatDate。
 限制：只能用 var 与字符串拼接（ES5），只能用 Math/JSON/Date/Array/String 常规方法，不能有死循环。
 要求：1~2 行、口语化、每天有变化（用 ctx.builtin.pick）、对 ctx.io.days 与变量做兜底、不写死昵称。

@@ -93,7 +93,17 @@ object AutoSparkBridge {
             conversations = conversationsJson(conversations),
             mountTargets = mountTargetsJson(config, conversationId),
             templateInfo = templateInfoJson(config, conversationId),
+            macroNames = macroNamesJson(config),
+            info = infoJson(config, conversations),
+            preview = false,
         )
+
+    /** 宏 id → 名字（`ctx.macro.name` 用）。 */
+    private fun macroNamesJson(config: SparkConfig): String {
+        val names = JSONObject()
+        config.macros.forEach { macro -> names.put(macro.id, macro.name) }
+        return names.toString()
+    }
 
     /** `ctx.system.getAllConversation()` 的返回值（字段少而稳定，不把原始负载带进脚本）。 */
     private fun conversationsJson(conversations: org.json.JSONArray): String {
@@ -129,6 +139,91 @@ object AutoSparkBridge {
         return org.json.JSONArray(targets.toList()).toString()
     }
 
+    /** 按 id 取信息的三张表：会话 / 模板 / 宏。 */
+    private fun infoJson(
+        config: SparkConfig,
+        conversations: org.json.JSONArray,
+    ): String {
+        val convs = JSONObject()
+        for (index in 0 until conversations.length()) {
+            val item = conversations.optJSONObject(index) ?: continue
+            val id = item.optString("conversationId")
+            if (id.isEmpty()) continue
+            val spark = item.optJSONObject("spark")
+            val own = config.conversation(id)
+            val parentId = own?.inheritFrom.orEmpty()
+            val parentGroup = config.group(parentId)
+            val parentBody =
+                when {
+                    parentGroup != null -> parentGroup.body
+                    parentId == SparkConfig.BUILTIN_BLANK -> ""
+                    else -> BuiltinTemplates.byId(parentId.removePrefix("builtin:"))?.body.orEmpty()
+                }
+            val macroList = org.json.JSONArray()
+            config.macrosFor(listOf(id) + listOfNotNull(parentId.takeIf { it.isNotEmpty() })).forEach { macro ->
+                macroList.put(JSONObject().put("id", macro.id).put("name", macro.name))
+            }
+            convs.put(
+                id,
+                JSONObject()
+                    .put("id", id)
+                    .put("name", item.optString("name"))
+                    .put("remark", item.optString("remarkName"))
+                    .put("days", spark?.optInt("days") ?: 0)
+                    .put("state", spark?.optInt("state", -1) ?: -1)
+                    .put("stateText", spark?.optString("stateText") ?: "")
+                    .put("isGroup", item.optBoolean("isGroup"))
+                    .put("template", JSONObject().put("id", id).put("name", config.conversationLabel(id)).put("body", own?.body.orEmpty()))
+                    .put(
+                        "parent",
+                        JSONObject()
+                            .put("id", parentId)
+                            .put("name", templateNameOf(config, id))
+                            .put("body", parentBody),
+                    )
+                    .put("macros", macroList),
+            )
+        }
+        val templates = JSONObject()
+        config.groups.forEach { group ->
+            val childs = org.json.JSONArray()
+            config.conversations.filter { it.inheritFrom == group.id }.forEach { child ->
+                childs.put(JSONObject().put("id", child.conversationId).put("name", config.conversationLabel(child.conversationId)))
+            }
+            templates.put(
+                group.id,
+                JSONObject()
+                    .put("id", group.id)
+                    .put("name", group.name)
+                    .put("body", group.body)
+                    .put("childs", childs)
+                    .put("isBuiltin", false),
+            )
+        }
+        val macros = JSONObject()
+        config.macros.forEach { macro ->
+            val templ = org.json.JSONArray()
+            val conv = org.json.JSONArray()
+            (macro.appliesTo + macro.templateOnly).forEach { target ->
+                if (target.contains(":")) conv.put(target) else templ.put(target)
+            }
+            macros.put(
+                macro.id,
+                JSONObject()
+                    .put("id", macro.id)
+                    .put("name", macro.name)
+                    .put("body", macro.body)
+                    .put("templates", templ)
+                    .put("conversations", conv),
+            )
+        }
+        return JSONObject()
+            .put("conversations", convs)
+            .put("templates", templates)
+            .put("macros", macros)
+            .toString()
+    }
+
     /** 模板信息：当前模板 id、父模板 id、父模板的派生列表。 */
     private fun templateInfoJson(
         config: SparkConfig,
@@ -143,9 +238,14 @@ object AutoSparkBridge {
         val parent =
             JSONObject()
                 .put("id", parentId)
+                .put("name", templateNameOf(config, conversationId))
                 .put("childs", childs)
+        val current =
+            JSONObject()
+                .put("id", conversationId)
+                .put("name", config.conversationLabel(conversationId))
         return JSONObject()
-            .put("thisid", conversationId)
+            .put("template", current)
             .put("parent", parent)
             .toString()
     }

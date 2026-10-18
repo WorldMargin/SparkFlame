@@ -78,6 +78,82 @@ object AutoSparkBridge {
         return config.composeProgram(body, macros)
     }
 
+    /** 脚本可见的沙盒环境：归属、已有数据、会话列表。 */
+    private fun sandboxEnv(
+        config: SparkConfig,
+        conversationId: String,
+        conversations: org.json.JSONArray,
+    ): SparkScriptEngine.SandboxEnv =
+        SparkScriptEngine.SandboxEnv(
+            data = config.sandbox.groupBy { it.owner },
+            conversations = conversationsJson(conversations),
+        )
+
+    /** `ctx.system.getAllConversation()` 的返回值（字段少而稳定，不把原始负载带进脚本）。 */
+    private fun conversationsJson(conversations: org.json.JSONArray): String {
+        val array = org.json.JSONArray()
+        for (index in 0 until conversations.length()) {
+            val item = conversations.optJSONObject(index) ?: continue
+            val spark = item.optJSONObject("spark")
+            array.put(
+                JSONObject()
+                    .put("id", item.optString("conversationId"))
+                    .put("name", item.optString("name"))
+                    .put("remark", item.optString("remarkName"))
+                    .put("days", spark?.optInt("days") ?: 0)
+                    .put("state", spark?.optInt("state", -1) ?: -1)
+                    .put("stateText", spark?.optString("stateText") ?: "")
+                    .put("isGroup", item.optBoolean("isGroup")),
+            )
+        }
+        return array.toString()
+    }
+
+    /** `ctx.template.template`：当前生效的模板名（空白模板就是「空白模板」）。 */
+    private fun templateNameOf(
+        config: SparkConfig,
+        conversationId: String,
+    ): String {
+        val parent = config.conversation(conversationId)?.inheritFrom?.let { config.templateName(it) }
+        return parent ?: BuiltinTemplates.BLANK.name
+    }
+
+    /** `ctx.template.parent_template`：父模板名（两层结构下一般为空）。 */
+    private fun parentTemplateNameOf(
+        config: SparkConfig,
+        conversationId: String,
+    ): String = config.conversation(conversationId)?.inheritFrom?.let { config.templateName(it) }?.let { "" } ?: ""
+
+    /** 把脚本改动写回配置（沙盒变量 + 宏挂载）。 */
+    private fun applyScriptMutations(
+        context: Context,
+        config: SparkConfig,
+        writes: List<com.worldmargin.autospark.features.autospark.model.SandboxVar>,
+        deletes: List<Pair<String, String>>,
+        macroOps: List<Triple<String, String, String>>,
+    ) {
+        if (writes.isEmpty() && deletes.isEmpty() && macroOps.isEmpty()) return
+        val sandbox = config.sandbox.toMutableList()
+        writes.forEach { write ->
+            val index = sandbox.indexOfFirst { it.owner == write.owner && it.key == write.key }
+            if (index >= 0) sandbox[index] = write else sandbox += write
+        }
+        deletes.forEach { (owner, key) -> sandbox.removeAll { it.owner == owner && it.key == key } }
+        var macros = config.macros
+        macroOps.forEach { (kind, name, conversationId) ->
+            val index = macros.indexOfFirst { it.name == name }
+            if (index < 0) return@forEach
+            val macro = macros[index]
+            val targets = macro.appliesTo.toMutableSet()
+            if (kind == "mount") targets += conversationId else targets -= conversationId
+            macros = macros.toMutableList().also { it[index] = macro.copy(appliesTo = targets) }
+        }
+        val updated = config.copy(sandbox = sandbox, macros = macros)
+        if (!ConfigClient.write(context, updated)) {
+            ModLog.w("脚本沙盒 / 宏挂载写入失败")
+        }
+    }
+
     /** 把当前会话列表写入快照（供管理界面展示）。 */
     fun refreshSnapshot(context: Context): RefreshOutcome {
         val fetched = fetchConversations()
@@ -467,6 +543,10 @@ object AutoSparkBridge {
         val sent = JSONArray()
         val skipped = JSONArray()
         val failed = JSONArray()
+        // 脚本对沙盒与宏的改动：这一轮跑完再统一落盘
+        val pendingSandbox = mutableListOf<com.worldmargin.autospark.features.autospark.model.SandboxVar>()
+        val pendingSandboxDeletes = mutableListOf<Pair<String, String>>()
+        val macroOps = mutableListOf<Triple<String, String, String>>()
 
         // 第一遍：只筛选，不发送 —— 先算出这轮「待续」有几个，提示要用它
         val candidates = mutableListOf<JSONObject>()
@@ -539,13 +619,18 @@ object AutoSparkBridge {
                 continue
             }
             val spark = conversation.optJSONObject("spark")
-            val text =
-                runCatching { SparkScriptEngine.render(
+            val rendered =
+                runCatching {
+                    SparkScriptEngine.renderFull(
                         com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(
                             config.templateVarsFor(conversationId),
                         ) + script,
                         buildVariables(conversation, spark),
-                    ) }
+                        sandboxEnv(config, conversationId, conversations),
+                        templateNameOf(config, conversationId),
+                        parentTemplateNameOf(config, conversationId),
+                    )
+                }
                     .getOrElse { error ->
                         failed.put(
                             JSONObject().put("conversationId", conversationId).put("name", name)
@@ -553,6 +638,10 @@ object AutoSparkBridge {
                         )
                         continue
                     }
+            pendingSandbox.addAll(rendered.sandboxWrites)
+            pendingSandboxDeletes.addAll(rendered.sandboxDeletes.map { it.owner to it.key })
+            rendered.macroOps.forEach { (kind, macroName) -> macroOps += Triple(kind, macroName, conversationId) }
+            val text = rendered.text
 
             val outcome = runCatching { JSONObject(ImMsgBridge.sendTextJson(conversationId, text, 0L, "")) }.getOrNull()
             if (outcome != null && outcome.optBoolean("ok")) {
@@ -569,6 +658,7 @@ object AutoSparkBridge {
             }
         }
 
+        applyScriptMutations(context, config, pendingSandbox, pendingSandboxDeletes, macroOps)
         val skippedCount = skipped.length()
         com.worldmargin.autospark.core.DouToastHelper.show(
             context,

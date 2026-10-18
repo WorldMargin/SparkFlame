@@ -1,5 +1,7 @@
 package com.worldmargin.autospark.features.autospark.script
 
+import com.worldmargin.autospark.features.autospark.model.SandboxVar
+import org.json.JSONObject
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
@@ -16,13 +18,13 @@ class ScriptTimeoutException : RuntimeException("脚本执行超时（可能存�
  * 宿主把上下文挂到沙盒里的 `ctx` 上，脚本把要发送的文本赋给固定变量 [RESULT_VAR]
  * （`$spark_result$`），引擎只读该变量（不会去取「最后一个表达式」的值）。
  *
- * `ctx` 下面按来源分三个命名空间：
+ * `ctx` 下面按来源分命名空间：
  * - [BUILTIN_OBJ]：内置能力 —— 日期时间等内置变量与 [FUNCTIONS]（`ctx.builtin.pick(...)`）
  * - [IO_OBJ]：宿主数据 —— 从抖音取到的会话信息（`ctx.io.nickname`、`ctx.io.days`…）
- * - [FUNCTIONS_OBJ]：用户自定义函数（`ctx.functions.<名字>`）
- * 另外 [VAR_OBJ] 是模板/会话变量（`ctx.template.<名字>`）。
- *
- * 脚本看不到任何 Java 类（[ClassShutter] 全拒），并有执行时间预算，超时即中断。
+ * - [SANDBOX_OBJ]：沙盒变量（跨次运行的 JSON 存储，见 [SandboxEnv]）
+ * - [SYSTEM_OBJ]：系统接口（会话列表、宏挂载）
+ * - [FUNCTIONS_OBJ]：用户自定义函数
+ * 另外 [VAR_OBJ] 是模板/会话变量（`ctx.template.<名字>`，含固定的 `template` / `parent_template`）。
  */
 object SparkScriptEngine {
     private const val TIMEOUT_MS = 2_000L
@@ -49,6 +51,45 @@ object SparkScriptEngine {
     /** 模板 / 会话变量挂载点：`ctx.template.<名字>`。 */
     const val VAR_OBJ = "template"
 
+    /** 沙盒变量挂载点：`ctx.sandbox.getvar / setvar / deletevar`。 */
+    const val SANDBOX_OBJ = "sandbox"
+
+    /** 系统接口挂载点：`ctx.system.getAllConversation / mountMacro / unmountMacro`。 */
+    const val SYSTEM_OBJ = "system"
+
+    /** 模板变量里两个固定键：当前模板名、父模板名。 */
+    const val VAR_TEMPLATE = "template"
+
+    /** 父模板名（没有父模板时为空串）。 */
+    const val VAR_PARENT_TEMPLATE = "parent_template"
+
+    /** 沙盒宿主所有者前缀：`template:<会话模板 id>`。 */
+    const val OWNER_TEMPLATE = "template:"
+
+    /** 沙盒宏所有者前缀：`macro:<宏 id>`。 */
+    const val OWNER_MACRO = "macro:"
+
+    /** 沙盒环境：已有数据 + 本轮会话列表。沙盒只给**宏**用，归属就是宏自己。 */
+    data class SandboxEnv(
+        /** 已有沙盒数据：owner（`macro:<宏 id>`）→ 键值。 */
+        val data: Map<String, List<SandboxVar>>,
+        /** 本轮可见的会话（`ctx.system.getAllConversation()` 的返回值）。 */
+        val conversations: String,
+    ) {
+        companion object {
+            val EMPTY = SandboxEnv(emptyMap(), "[]")
+        }
+    }
+
+    /** 渲染结果：文案 + 脚本对沙盒与宏的改动（由调用方落盘）。 */
+    data class Rendered(
+        val text: String,
+        val sandboxWrites: List<SandboxVar>,
+        val sandboxDeletes: List<SandboxVar>,
+        /** `mount` / `unmount` + 宏名。 */
+        val macroOps: List<Pair<String, String>>,
+    )
+
     /** 沙盒：脚本不可见任何 Java 类。 */
     private val denyJava = ClassShutter { false }
 
@@ -63,16 +104,30 @@ object SparkScriptEngine {
     }
 
     /**
-     * 执行脚本并取回文案。
+     * 执行脚本并取回文案（不关心沙盒改动时用这个重载）。
      *
      * @param script 用户脚本文本
      * @param values 注入 [CTX] 的变量；按 [VARIABLES] 里声明的归属分别进 `builtin` / `io`
-     * @return 脚本写入 [RESULT_VAR] 的内容（去掉首尾空白）
      */
     fun render(
         script: String,
         values: Map<String, Any?>,
-    ): String {
+    ): String = renderFull(script, values, SandboxEnv.EMPTY, "", "").text
+
+    /**
+     * 执行脚本，取回文案与沙盒改动。
+     *
+     * @param env 沙盒环境（拥有者、已有数据、会话列表）
+     * @param templateName 当前模板名（`ctx.template.template`）
+     * @param parentTemplateName 父模板名（`ctx.template.parent_template`）
+     */
+    fun renderFull(
+        script: String,
+        values: Map<String, Any?>,
+        env: SandboxEnv,
+        templateName: String,
+        parentTemplateName: String,
+    ): Rendered {
         val factory = TimeoutFactory(System.currentTimeMillis() + TIMEOUT_MS)
         val cx = factory.enterContext()
         try {
@@ -95,7 +150,17 @@ object SparkScriptEngine {
             }
             ScriptableObject.putProperty(ctxObject, BUILTIN_OBJ, builtinObject)
             ScriptableObject.putProperty(ctxObject, IO_OBJ, ioObject)
+            // 模板变量对象：先放两个固定键，前导脚本再把用户的变量写进来
+            val templateObject = cx.newObject(scope)
+            ScriptableObject.putProperty(templateObject, VAR_TEMPLATE, templateName)
+            ScriptableObject.putProperty(templateObject, VAR_PARENT_TEMPLATE, parentTemplateName)
+            ScriptableObject.putProperty(ctxObject, VAR_OBJ, templateObject)
             ScriptableObject.putProperty(scope, CTX, ctxObject)
+            // 沙盒 / 系统接口的底层数据（JS 侧用 JSON.parse 展开）
+            val state = cx.newObject(scope)
+            ScriptableObject.putProperty(state, "dataJson", sandboxJson(env))
+            ScriptableObject.putProperty(state, "convJson", env.conversations)
+            ScriptableObject.putProperty(scope, SANDBOX_STATE_VAR, state)
 
             cx.evaluateString(scope, MACROS, "macros", 1, null)
 
@@ -112,12 +177,76 @@ object SparkScriptEngine {
                 throw IllegalStateException("脚本没有给 $RESULT_VAR 赋值")
             }
             val text = flatten(result).trim()
+            val changes = collectChanges(cx, scope)
             if (text.isEmpty()) throw IllegalStateException("$RESULT_VAR 是空的（没有内容可发送）")
-            return text
+            return Rendered(text, changes.writes, changes.deletes, changes.ops)
         } finally {
             Context.exit()
         }
     }
+
+    /** 沙盒里 `__sb` 这个名字（脚本可见但约定不碰）。 */
+    private const val SANDBOX_STATE_VAR = "__sb"
+
+    /** 把 owner → key → 值 拼成 `{"owner":{"key":<json>}}`（值本身就是 JSON 文本）。 */
+    private fun sandboxJson(env: SandboxEnv): String {
+        val root = JSONObject()
+        env.data.forEach { (owner, vars) ->
+            val scope = JSONObject()
+            vars.forEach { variable ->
+                runCatching { scope.put(variable.key, JSONObject(variable.value)) }
+                    .recoverCatching { scope.put(variable.key, org.json.JSONTokener(variable.value).nextValue()) }
+            }
+            root.put(owner, scope)
+        }
+        return root.toString()
+    }
+
+    /** 脚本跑完后把沙盒写入 / 删除 / 宏操作取回来。 */
+    private fun collectChanges(
+        cx: Context,
+        scope: Scriptable,
+    ): Changes {
+        val probe =
+            "JSON.stringify({w: $SANDBOX_STATE_VAR.writes, d: $SANDBOX_STATE_VAR.deletes, " +
+                "o: $SANDBOX_STATE_VAR.ops})"
+        val value =
+            runCatching { cx.evaluateString(scope, probe, "sandbox", 1, null) }
+                .getOrNull() ?: return Changes()
+        val json = runCatching { JSONObject(Context.toString(value)) }.getOrNull() ?: return Changes()
+
+        val writes =
+            (0 until json.optJSONArray("w").orEmptyLength()).mapNotNull { index ->
+                val item = json.optJSONArray("w")?.optJSONArray(index) ?: return@mapNotNull null
+                val owner = item.optString(0)
+                val key = item.optString(1)
+                val raw = item.optString(2)
+                if (owner.isBlank() || key.isBlank()) null else SandboxVar(owner, key, raw)
+            }
+        val deletes =
+            (0 until json.optJSONArray("d").orEmptyLength()).mapNotNull { index ->
+                val item = json.optJSONArray("d")?.optJSONArray(index) ?: return@mapNotNull null
+                val owner = item.optString(0)
+                val key = item.optString(1)
+                if (owner.isBlank() || key.isBlank()) null else SandboxVar(owner, key, "")
+            }
+        val ops =
+            (0 until json.optJSONArray("o").orEmptyLength()).mapNotNull { index ->
+                val item = json.optJSONArray("o")?.optJSONArray(index) ?: return@mapNotNull null
+                val kind = item.optString(0)
+                val name = item.optString(1)
+                if (kind.isBlank() || name.isBlank()) null else kind to name
+            }
+        return Changes(writes, deletes, ops)
+    }
+
+    private fun org.json.JSONArray?.orEmptyLength(): Int = this?.length() ?: 0
+
+    private data class Changes(
+        val writes: List<SandboxVar> = emptyList(),
+        val deletes: List<SandboxVar> = emptyList(),
+        val ops: List<Pair<String, String>> = emptyList(),
+    )
 
     /** 结果是列表时按行拼接（一条消息里多行），字符串或其它值直接转字符串。 */
     private fun flatten(result: Any?): String {
@@ -162,9 +291,25 @@ object SparkScriptEngine {
             Doc("formatDate", "date, pattern", "按 yyyy/MM/dd/HH/mm/ss 格式化日期", "string", BUILTIN_OBJ),
         )
 
+    /** 沙盒与系统接口：挂在 `ctx.sandbox` / `ctx.system` 下。 */
+    val SANDBOX_FUNCTIONS: List<Doc> =
+        listOf(
+            Doc("getvar", "name", "读一个沙盒变量（自己的优先，再找模板的）", "any", SANDBOX_OBJ),
+            Doc("setvar", "name, value", "写一个沙盒变量（值是任意 JS 值，存成 JSON）", "void", SANDBOX_OBJ),
+            Doc("deletevar", "name", "删一个自己创建的沙盒变量", "void", SANDBOX_OBJ),
+        )
+
+    /** 系统接口：挂在 `ctx.system` 下。 */
+    val SYSTEM_FUNCTIONS: List<Doc> =
+        listOf(
+            Doc("getAllConversation", "", "本轮所有会话：[{id,name,remark,days,state,stateText,isGroup}]", "any[]", SYSTEM_OBJ),
+            Doc("mountMacro", "name", "把名为 name 的宏挂到当前会话", "void", SYSTEM_OBJ),
+            Doc("unmountMacro", "name", "从当前会话摘掉名为 name 的宏", "void", SYSTEM_OBJ),
+        )
+
     /**
      * 脚本可见变量，按来源分两处：
-     * - `ctx.builtin`：日期时间这类**引擎自己算出来的**（[VARIABLES] 里 scope 为 [BUILTIN_OBJ]）
+     * - `ctx.builtin`：日期时间这类**引擎自己算出来的**
      * - `ctx.io`：**从抖音取到的**会话数据（昵称、备注、天数、状态…）
      */
     val VARIABLES: List<Doc> =
@@ -198,7 +343,7 @@ object SparkScriptEngine {
             "formatDate" to "date: string, pattern?: string",
         )
 
-    /** 全局宏：脚本里以 `ctx.builtin.xxx(...)` 调用。 */
+    /** 全局宏：脚本里以 `ctx.builtin.xxx(...)` / `ctx.sandbox.xxx(...)` / `ctx.system.xxx(...)` 调用。 */
     private val MACROS =
         """
         // 从数组里随机取一个
@@ -223,5 +368,50 @@ object SparkScriptEngine {
         ctx.builtin.pick = pick; ctx.builtin.pad = pad; ctx.builtin.repeat = repeat; ctx.builtin.random = random;
         ctx.builtin.shuffle = shuffle; ctx.builtin.countdown = countdown; ctx.builtin.nextNewYear = nextNewYear;
         ctx.builtin.untilNewYear = untilNewYear; ctx.builtin.formatDate = formatDate;
+
+        // 沙盒 / 系统接口的展开：Kotlin 侧塞进来的是 JSON 文本
+        __sb.data = (__sb.dataJson && __sb.dataJson.length > 1) ? JSON.parse(__sb.dataJson) : {};
+        __sb.convs = (__sb.convJson && __sb.convJson.length > 1) ? JSON.parse(__sb.convJson) : [];
+        __sb.writes = []; __sb.deletes = []; __sb.ops = []; __sb.owner = "";
+
+        // 沙盒变量：**只给宏用**，归属就是宏自己（模板里 ctx.sandbox 是 undefined）。
+        // 每个宏执行前，程序里会插一句 __sandboxOwner("macro:<宏 id>")
+        function __makeSandbox(owner){
+          var api = {
+            getvar: function(name){
+              var own = __sb.data[owner];
+              return (own && Object.prototype.hasOwnProperty.call(own, String(name))) ? own[String(name)] : undefined;
+            },
+            setvar: function(name, value){
+              name = String(name);
+              var own = __sb.data[owner];
+              if (!own) { own = {}; __sb.data[owner] = own; }
+              own[name] = value;
+              __sb.writes.push([owner, name, JSON.stringify(value === undefined ? null : value)]);
+            },
+            deletevar: function(name){
+              name = String(name);
+              var own = __sb.data[owner];
+              if (own && Object.prototype.hasOwnProperty.call(own, name)) {
+                delete own[name];
+                __sb.deletes.push([owner, name]);
+                return true;
+              }
+              return false;
+            }
+          };
+          return api;
+        }
+        function __sandboxOwner(owner){
+          __sb.owner = owner;
+          ctx.sandbox = (String(owner).indexOf("macro:") === 0) ? __makeSandbox(owner) : undefined;
+        }
+
+        // 系统接口：会话列表 + 宏挂载
+        ctx.system = {
+          getAllConversation: function(){ return __sb.convs; },
+          mountMacro: function(name){ __sb.ops.push(["mount", String(name)]); },
+          unmountMacro: function(name){ __sb.ops.push(["unmount", String(name)]); }
+        };
         """.trimIndent()
 }

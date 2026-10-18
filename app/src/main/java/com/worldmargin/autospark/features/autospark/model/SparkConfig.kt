@@ -155,6 +155,19 @@ data class ConversationSnapshot(
 }
 
 /** 全量配置：模板 + 发送记录 + 会话快照 + 手动归属。 */
+/**
+ * 沙盒变量：脚本通过 `ctx.sandbox.setvar` 写下的数据，**跳次运行保留**，值存成 JSON 文本。
+ *
+ * 归属（谁创建谁管理）：
+ * - [owner] 为 `template:<会话模板 id>`：模板创建的，宏可以读、也可以改；
+ * - [owner] 为 `macro:<宏 id>`：宏自己创建的，模板读不到也写不了，只有创建它的宏能删。
+ */
+data class SandboxVar(
+    val owner: String,
+    val key: String,
+    val value: String,
+)
+
 data class SparkConfig(
     val enabled: Boolean = false,
     /**
@@ -174,6 +187,8 @@ data class SparkConfig(
     val macros: List<MacroScript> = emptyList(),
     /** 自定义函数：执行前注入成 `ctx.functions.<名字>`。 */
     val functions: List<UserFunction> = emptyList(),
+    /** 沙盒变量：脚本 `ctx.sandbox.setvar` 写下的 JSON 数据，按创建者归属。 */
+    val sandbox: List<SandboxVar> = emptyList(),
     /**
      * 宿主（抖音进程）最近一次运行的简报：快照刷新是否成功、失败原因、续火花结果。
      * 本机 LSPosed 日志不可用，这是唯一能让管理界面看到宿主侧状态的通道。
@@ -312,9 +327,17 @@ data class SparkConfig(
             append(body)
             macros.filter { it.body.isNotBlank() }.forEach { macro ->
                 append('\n').append(RESULT_NORMALIZE).append('\n')
+                // 沙盒归属切到这个宏自己（模板段拿不到 ctx.sandbox）
+                append(SANDBOX_OWNER_CALL).append(MACRO_OWNER_PREFIX).append(macro.id).append("\");\n")
                 append("// 宏：").append(macro.name).append('\n').append(macro.body)
             }
         }
+
+    /** 沙盒归属切换：脚本里由引擎提供的内部函数。 */
+    private val SANDBOX_OWNER_CALL: String = "__sandboxOwner(\""
+
+    /** 沙盒里宏归属的前缀。 */
+    private val MACRO_OWNER_PREFIX: String = "macro:"
 
     /** 自定义函数注入：函数声明本体 + 挂到 `ctx.functions.<名字>`。 */
     fun functionsPrelude(): String =
@@ -618,6 +641,7 @@ object ConfigCodec {
     private const val KEY_MACROS = "macros"
     private const val KEY_FUNCTIONS = "functions"
     private const val KEY_USE_MONACO = "useMonacoEditor"
+    private const val KEY_SANDBOX = "sandbox"
 
     private const val INHERIT_BLANK = "blank"
 
@@ -707,6 +731,11 @@ object ConfigCodec {
             )
         }
 
+        val sandbox = JSONArray()
+        config.sandbox.forEach { item ->
+            sandbox.put(JSONObject().put("owner", item.owner).put("key", item.key).put("value", item.value))
+        }
+
         val functions = JSONArray()
         config.functions.forEach { fn ->
             functions.put(
@@ -730,6 +759,7 @@ object ConfigCodec {
             .put(KEY_FORCED_SKIP, JSONArray(config.forcedSkip.toList()))
             .put(KEY_MACROS, macros)
             .put(KEY_FUNCTIONS, functions)
+            .put(KEY_SANDBOX, sandbox)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
             .put(KEY_HOST_ALIVE_AT, config.hostAliveAt)
@@ -819,6 +849,19 @@ object ConfigCodec {
             }
         }
 
+        val sandbox = mutableListOf<SandboxVar>()
+        root.optJSONArray(KEY_SANDBOX)?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                sandbox +=
+                    SandboxVar(
+                        owner = item.optString("owner"),
+                        key = item.optString("key"),
+                        value = item.optString("value"),
+                    )
+            }
+        }
+
         val functions = mutableListOf<UserFunction>()
         root.optJSONArray(KEY_FUNCTIONS)?.let { array ->
             for (index in 0 until array.length()) {
@@ -846,6 +889,7 @@ object ConfigCodec {
             forcedSkip = root.readIdSet(KEY_FORCED_SKIP),
             macros = macros,
             functions = functions,
+            sandbox = sandbox,
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),
             hostAliveAt = root.optLong(KEY_HOST_ALIVE_AT),

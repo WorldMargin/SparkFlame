@@ -32,6 +32,10 @@ object SparkTypeScript {
         }
         builder.append("}\n")
         builder.append("interface SparkTemplate {\n")
+        builder.append("\t/** 当前生效的模板名 */\n")
+        builder.append("\t").append(SparkScriptEngine.VAR_TEMPLATE).append(": string;\n")
+        builder.append("\t/** 父模板名（没有父模板时为空串） */\n")
+        builder.append("\t").append(SparkScriptEngine.VAR_PARENT_TEMPLATE).append(": string;\n")
         builder.append("\t/** 变量名 → 求值结果；没声明的名字也能读（值为 undefined） */\n")
         builder.append("\t[key: string]: any;\n")
         // 同名只声明一次（会话自己的变量排在后面，所以后者覆盖）
@@ -65,11 +69,28 @@ object SparkTypeScript {
             builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")
         }
         builder.append("}\n")
+        builder.append("interface SparkSandbox {\n")
+        SparkScriptEngine.SANDBOX_FUNCTIONS.forEach { function ->
+            builder.append("\t/** ").append(escape(function.desc)).append(" */\n")
+            builder.append("\t").append(function.name).append('(').append(function.params).append("): any;\n")
+        }
+        builder.append("}\n")
+        builder.append("interface SparkSystem {\n")
+        SparkScriptEngine.SYSTEM_FUNCTIONS.forEach { function ->
+            builder.append("\t/** ").append(escape(function.desc)).append(" */\n")
+            builder.append("\t").append(function.name).append('(').append(function.params).append("): ")
+                .append(function.type).append(";\n")
+        }
+        builder.append("}\n")
         builder.append("interface SparkCtx {\n")
         builder.append("\t/** 内置能力：日期时间 + 内置函数 */\n")
         builder.append("\tbuiltin: SparkBuiltin;\n")
         builder.append("\t/** 宿主数据：抖音给的会话信息 */\n")
         builder.append("\tio: SparkIo;\n")
+        builder.append("\t/** 沙盒变量：只在宏里有（模板里为 undefined） */\n")
+        builder.append("\tsandbox?: SparkSandbox;\n")
+        builder.append("\t/** 系统接口：会话列表与宏挂载 */\n")
+        builder.append("\tsystem: SparkSystem;\n")
         builder.append("\t/** 自定义函数（在「宏/函数」页定义） */\n")
         builder.append("\tfunctions: SparkFunctions;\n")
         builder.append("\t/** 模板变量（在模板编辑页的「变量」卡里定义） */\n")

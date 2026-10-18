@@ -184,7 +184,13 @@ class MacroEditActivity : Activity() {
             .setTitle("删除这个宏？")
             .setMessage("宏是独立的临时脚本，删掉不影响任何模板内容。")
             .setPositiveButton("删除") { _, _ ->
-                ConfigStore.update(this) { config -> config.copy(macros = config.macros.filterNot { it.id == id }) }
+                ConfigStore.update(this) { config ->
+                    config.copy(
+                        macros = config.macros.filterNot { it.id == id },
+                        // 沙盒归属就是宏自己：宏没了它的键也没人读得到了
+                        sandbox = config.sandbox.filterNot { it.owner == "macro:" + id },
+                    )
+                }
                 finish()
             }.setNegativeButton("取消", null)
             .show()

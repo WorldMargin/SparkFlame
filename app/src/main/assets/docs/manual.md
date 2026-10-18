@@ -173,7 +173,44 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 | `ctx.io.peerUid` | string | 对方 UID |
 | `ctx.io.conversationId` | string | 会话 ID |
 
-### 6.3 内置函数（`ctx.builtin`）
+### 6.3 模板固定变量（`ctx.template` 里的两个保留键）
+
+| 名字 | 类型 | 说明 |
+| --- | --- | --- |
+| `ctx.template.template` | string | 当前生效的模板名（空白模板就是「空白模板」） |
+| `ctx.template.parent_template` | string | 父模板名，没有就是空串 |
+
+### 6.4 沙盒变量（只给宏用）
+
+宏可以用 `ctx.sandbox` 读写**跨次运行保留**的数据，值按 JSON 存进配置（`sandbox` 段）；
+**模板脚本里 `ctx.sandbox` 是 `undefined`**，归属就是宏自己（谁创建谁管理）。
+
+| 调用 | 说明 |
+| --- | --- |
+| `ctx.sandbox.getvar(name)` | 读一个键；没有就是 `undefined` |
+| `ctx.sandbox.setvar(name, value)` | 写一个键；`value` 可以是对象 / 数组 / 数字 / 字符串，存成 JSON |
+| `ctx.sandbox.deletevar(name)` | 删一个键（只能删自己创建的） |
+
+键空间按宏隔离：另一个宏读不到这个宏的键；删掉宏时它名下的键也一起清掉。
+
+```js
+// 宏里：记录这个宏跑过几次
+var n = (ctx.sandbox.getvar("runs") || 0) + 1;
+ctx.sandbox.setvar("runs", n);
+$spark_result$.push("（第 " + n + " 次加这句）");
+```
+
+### 6.5 系统接口（`ctx.system`）
+
+| 调用 | 说明 |
+| --- | --- |
+| `ctx.system.getAllConversation()` | 本轮可见的会话数组：`{id, name, remark, days, state, stateText, isGroup}` |
+| `ctx.system.mountMacro(name)` | 把名为 `name` 的宏挂到**当前会话** |
+| `ctx.system.unmountMacro(name)` | 从当前会话摘掉名为 `name` 的宏 |
+
+会话列表来自本轮扫描的结果，不额外请求网络；宏挂载在这一轮跑完后统一写回配置，**下一轮生效**。
+
+### 6.6 内置函数（`ctx.builtin`）
 
 | 调用 | 返回 | 说明 |
 | --- | --- | --- |
@@ -188,7 +225,7 @@ $spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 | `ctx.builtin.formatDate(date, pattern)` | string | 按 `yyyy/MM/dd/HH/mm/ss` 格式化日期 |
 | `ctx.template.名字` | 模板变量（见下方「模板变量」）。值是 JS 表达式，未定义则取父模板的值 |
 
-### 6.4 自定义函数
+### 6.7 自定义函数
 
 在 **宏/函数 → 函数** 页里**直接写完整函数声明**（只允许一个函数），保存时自动解析出函数名与形参，
 注入成 `ctx.functions.<名字>`：

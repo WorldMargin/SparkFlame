@@ -16,6 +16,7 @@ import com.worldmargin.autospark.features.autospark.model.TemplateGroup
 import com.worldmargin.autospark.features.autospark.model.TemplateOps
 import com.worldmargin.autospark.features.autospark.model.TemplateVar
 import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
+import com.worldmargin.autospark.features.autospark.script.PreviewData
 import com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.asClickable
@@ -204,7 +205,7 @@ class TemplateEditActivity : Activity() {
                 SparkScriptEngine.render(
                     TemplateVarPrelude.of(vars) + program,
                     SparkPreview.variables(sample),
-                    SparkScriptEngine.macroNamesJson(config),
+                    PreviewData.env(config, groupId),
                 )
             }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
         AlertDialog

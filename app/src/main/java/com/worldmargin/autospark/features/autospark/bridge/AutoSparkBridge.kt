@@ -87,10 +87,12 @@ object AutoSparkBridge {
         config: SparkConfig,
         conversationId: String,
         conversations: org.json.JSONArray,
+        only: Set<String> = emptySet(),
+        ignoreSentToday: Boolean = false,
     ): SparkScriptEngine.SandboxEnv =
         SparkScriptEngine.SandboxEnv(
             data = config.sandbox.groupBy { it.owner },
-            conversations = conversationsJson(conversations),
+            conversations = conversationsJson(config, conversations, only, ignoreSentToday),
             mountTargets = mountTargetsJson(config, conversationId),
             templateInfo = templateInfoJson(config, conversationId),
             macroNames = macroNamesJson(config),
@@ -106,20 +108,41 @@ object AutoSparkBridge {
     }
 
     /** `ctx.system.getAllConversation()` 的返回值（字段少而稳定，不把原始负载带进脚本）。 */
-    private fun conversationsJson(conversations: org.json.JSONArray): String {
+    private fun conversationsJson(
+        config: SparkConfig,
+        conversations: org.json.JSONArray,
+        only: Set<String> = emptySet(),
+        ignoreSentToday: Boolean = false,
+    ): String {
         val array = org.json.JSONArray()
+        val today = dayFormat.format(Date())
+        val selectedIds = config.selectedIds()
         for (index in 0 until conversations.length()) {
             val item = conversations.optJSONObject(index) ?: continue
             val spark = item.optJSONObject("spark")
+            val id = item.optString("conversationId")
+            val isGroup = item.optBoolean("isGroup")
+            val selected = id in selectedIds
+            val sentToday = config.sentDays[id] == today
             array.put(
                 JSONObject()
-                    .put("id", item.optString("conversationId"))
+                    .put("id", id)
                     .put("name", item.optString("name"))
                     .put("remark", item.optString("remarkName"))
                     .put("days", spark?.optInt("days") ?: 0)
                     .put("state", spark?.optInt("state", -1) ?: -1)
                     .put("stateText", spark?.optString("stateText") ?: "")
-                    .put("isGroup", item.optBoolean("isGroup")),
+                    .put("isGroup", isGroup)
+                    .put("selected", selected)
+                    .put("sentToday", sentToday)
+                    .put(
+                        "willSend",
+                        when {
+                            id in only -> true
+                            ignoreSentToday -> true
+                            else -> selected && !sentToday && !isGroup
+                        },
+                    ),
             )
         }
         return array.toString()
@@ -786,7 +809,7 @@ object AutoSparkBridge {
                             config.templateVarsFor(conversationId),
                         ) + script,
                         buildVariables(conversation, spark),
-                        sandboxEnv(config, conversationId, conversations),
+                        sandboxEnv(config, conversationId, conversations, only, ignoreSentToday),
                         templateNameOf(config, conversationId),
                         parentTemplateNameOf(config, conversationId),
                     )

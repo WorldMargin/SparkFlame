@@ -17,6 +17,7 @@ import com.worldmargin.autospark.features.autospark.model.ConfigCodec
 import com.worldmargin.autospark.features.autospark.model.SparkConfig
 import com.worldmargin.autospark.features.autospark.model.TemplateVar
 import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
+import com.worldmargin.autospark.features.autospark.script.PreviewData
 import com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_ACCENT
@@ -414,7 +415,7 @@ class VariableListActivity : Activity() {
                 SparkScriptEngine.render(
                     TemplateVarPrelude.of(vars) + pushes,
                     SparkPreview.variables(sample),
-                    SparkScriptEngine.macroNamesJson(config),
+                    PreviewData.env(config, sample?.conversationId),
                 )
             }
         AlertDialog

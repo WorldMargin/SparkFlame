@@ -140,33 +140,17 @@ object SparkScriptEngine {
     fun render(
         script: String,
         values: Map<String, Any?>,
-    ): String = render(script, values, "{}")
+    ): String = renderFull(script, values, SandboxEnv.EMPTY.copy(preview = true), "", "").text
 
     /**
-     * 预览用重载：除了只读，还能带上宏名映射（`ctx.macro.name`）。
-     *
-     * 预览路径不经过 bridge，宏名要由调用方自己传进来，
-     * 否则宏里拿到的名字是空串。
+     * 预览用重载：数据由 [PreviewData] 造好（只带正在预览的那个会话），
+     * 引擎只负责把 [SandboxEnv.preview] 置为 true：不触发任何修改。
      */
     fun render(
         script: String,
         values: Map<String, Any?>,
-        macroNames: String,
-    ): String =
-        renderFull(
-            script,
-            values,
-            SandboxEnv.EMPTY.copy(preview = true, macroNames = macroNames),
-            "",
-            "",
-        ).text
-
-    /** 宏 id → 名字的 JSON（预览路径直接用它）。 */
-    fun macroNamesJson(config: com.worldmargin.autospark.features.autospark.model.SparkConfig): String {
-        val names = org.json.JSONObject()
-        config.macros.forEach { macro -> names.put(macro.id, macro.name) }
-        return names.toString()
-    }
+        env: SandboxEnv,
+    ): String = renderFull(script, values, env.copy(preview = true), "", "").text
 
     /**
      * 执行脚本，取回文案与沙盒改动。

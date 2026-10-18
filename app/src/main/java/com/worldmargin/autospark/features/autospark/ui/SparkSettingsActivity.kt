@@ -34,6 +34,7 @@ import com.worldmargin.autospark.features.autospark.model.TemplateOps
 import com.worldmargin.autospark.features.autospark.model.TemplateSource
 import com.worldmargin.autospark.features.autospark.model.UserFunction
 import com.worldmargin.autospark.features.autospark.provider.ConfigContract
+import com.worldmargin.autospark.features.autospark.script.PreviewData
 import com.worldmargin.autospark.features.autospark.script.SparkScriptEngine
 import com.worldmargin.autospark.features.autospark.store.ConfigStore
 import com.worldmargin.autospark.features.autospark.ui.UiKit.COLOR_ACCENT
@@ -737,7 +738,8 @@ class SparkSettingsActivity : Activity() {
         )
 
         // 立即手动发送：勾选了就发勾选的，没勾就发「已选目标」全部（不受总开关与今日已发限制）
-        val manualTargets = if (selected.isNotEmpty()) selected.toList() else renewal.map { it.conversationId }
+        // 目标要在点击时现算：勾选框是页面建好之后才变的，构建时算会拿到旧列表
+        fun currentTargets(): List<String> = if (selected.isNotEmpty()) selected.toList() else renewal.map { it.conversationId }
         page.addView(
             row().apply {
                 setPadding(0, dp(6), 0, 0)
@@ -747,7 +749,7 @@ class SparkSettingsActivity : Activity() {
                         sendText(),
                         primary = true,
                         compact = true,
-                    ) { confirmManualSend(manualTargets) }
+                    ) { confirmManualSend(currentTargets()) }
                 // iconButton 里图标在前、文字在后，取文字视图留着实时改
                 sendLabel = (send as? android.view.ViewGroup)?.getChildAt(1) as? TextView
                 addView(send)
@@ -2000,7 +2002,7 @@ class SparkSettingsActivity : Activity() {
         return runCatching { SparkScriptEngine.render(
                 com.worldmargin.autospark.features.autospark.script.TemplateVarPrelude.of(vars) + program,
                 sample,
-                SparkScriptEngine.macroNamesJson(config),
+                PreviewData.env(config, SparkPreview.sampleAt(config, sampleIndex)?.conversationId),
             ) }
             .getOrElse { "（预览失败：" + (it.message ?: it.toString()) + "）" }
     }

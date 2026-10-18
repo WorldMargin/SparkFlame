@@ -70,8 +70,12 @@ class SparkLanguage(
 
         val candidates: List<Candidate> =
             when (receiver) {
-                // `ctx.` 之后：补全 ctx 的成员（含自定义函数挂载点）
+                // `ctx.` 之后：补全四个命名空间
                 SparkScriptEngine.CTX -> ctxMembers()
+                // `ctx.builtin.` 之后：内置变量与内置函数
+                SparkScriptEngine.BUILTIN_OBJ -> builtinMembers()
+                // `ctx.io.` 之后：宿主数据
+                SparkScriptEngine.IO_OBJ -> ioMembers()
                 // `ctx.functions.` 之后：补全用户自定义函数
                 SparkScriptEngine.FUNCTIONS_OBJ -> functionCandidates()
                 // 普通位置：脚本里已声明的变量 + ctx/关键字等
@@ -100,14 +104,41 @@ class SparkLanguage(
             }
 
     private fun ctxMembers(): List<Candidate> =
-        SparkScriptEngine.FUNCTIONS.map {
-            Candidate(if (it.isFunction) "${it.name}(${it.params})" else it.name, it.desc, "${it.name}()")
-        } + SparkScriptEngine.VARIABLES.map { Candidate(it.name, it.desc, it.name) } +
+        listOf(
+            Candidate(
+                SparkScriptEngine.BUILTIN_OBJ,
+                "内置能力：日期时间 + 内置函数",
+                SparkScriptEngine.CTX_DOT + SparkScriptEngine.BUILTIN_OBJ + ".",
+            ),
+            Candidate(
+                SparkScriptEngine.IO_OBJ,
+                "宿主数据：从抖音取到的会话信息",
+                SparkScriptEngine.CTX_DOT + SparkScriptEngine.IO_OBJ + ".",
+            ),
+            Candidate(
+                SparkScriptEngine.VAR_OBJ,
+                "模板变量（在「变量」卡里定义）",
+                SparkScriptEngine.CTX_DOT + SparkScriptEngine.VAR_OBJ + ".",
+            ),
             Candidate(
                 SparkScriptEngine.FUNCTIONS_OBJ,
                 "自定义函数（在「宏/函数」页定义）",
                 SparkScriptEngine.CTX_DOT + SparkScriptEngine.FUNCTIONS_OBJ + ".",
-            )
+            ),
+        )
+
+    /** `ctx.builtin.`：内置变量与内置函数。 */
+    private fun builtinMembers(): List<Candidate> =
+        SparkScriptEngine.FUNCTIONS.map {
+            Candidate(if (it.isFunction) "${it.name}(${it.params})" else it.name, it.desc, "${it.name}()")
+        } +
+            SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.BUILTIN_OBJ }
+                .map { Candidate(it.name, it.desc, it.name) }
+
+    /** `ctx.io.`：从抖音取到的会话数据。 */
+    private fun ioMembers(): List<Candidate> =
+        SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.IO_OBJ }
+            .map { Candidate(it.name, it.desc, it.name) }
 
     /** 光标之前脚本里声明过的变量、函数名与函数形参（VSCode 那样的局部补全）。 */
     private fun localCandidates(

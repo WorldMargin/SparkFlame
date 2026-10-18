@@ -70,7 +70,7 @@
 
 【运行环境】
 - JavaScript（Rhino 沙盒）：没有 DOM、没有网络、不能用任何 Java 类；单次执行限时 2 秒。
-- 脚本里可以读变量、调用函数，全部挂在 ctx 上（ctx.xxx）。
+- 脚本里可以读变量、调用函数，全部挂在 ctx 上：内置能力在 ctx.builtin、抖音给的数据在 ctx.io、模板变量在 ctx.template、自定义函数在 ctx.functions。
 - 发送内容放进固定变量 $spark_result$。它**永远是列表**：引擎在执行脚本前已初始化成 []，用 $spark_result$.push("每行内容") 逐行添加，一行一条。
 - 不要给 $spark_result$ 赋字符串（`= "…"`）；引擎虽然兼容，但统一用 push，类型和补全都更准。
 - $spark_result$ 为空列表 = 这条不发。除了它，脚本不需要 print / return。
@@ -90,19 +90,19 @@ peerUid     字符串  对方 UID
 conversationId 字符串 会话 ID
 
 【可用函数（ctx.*）】
-ctx.pick(list)               从数组里随机取一个
-ctx.pad(n)                   数字补零到两位
-ctx.repeat(s, n)             把字符串 s 重复 n 次
-ctx.random(a, b)             [a, b) 区间内的随机整数
-ctx.shuffle(list)            洗牌，返回新数组
-ctx.countdown(target)        距目标日期还有几天（已过为负），target 形如 "2027-01-01"
-ctx.nextNewYear()            下一个元旦的日期字符串
-ctx.untilNewYear()           距下一个元旦还有几天
-ctx.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
+ctx.builtin.pick(list)               从数组里随机取一个
+ctx.builtin.pad(n)                   数字补零到两位
+ctx.builtin.repeat(s, n)             把字符串 s 重复 n 次
+ctx.builtin.random(a, b)             [a, b) 区间内的随机整数
+ctx.builtin.shuffle(list)            洗牌，返回新数组
+ctx.builtin.countdown(target)        距目标日期还有几天（已过为负），target 形如 "2027-01-01"
+ctx.builtin.nextNewYear()            下一个元旦的日期字符串
+ctx.builtin.untilNewYear()           距下一个元旦还有几天
+ctx.builtin.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
 
 【写作要求】
 - 文案要像真人发的：口语、简短、可以带 emoji，不要像系统通知。
-- 不要每天一模一样：需要变化的地方用 ctx.pick([...]) 准备 3 个以上备选。
+- 不要每天一模一样：需要变化的地方用 ctx.builtin.pick([...]) 准备 3 个以上备选。
 - $spark_result$ 是列表：多行内容就 push 多次，引擎按行拼成一条消息发送。
 
 【我的需求】
@@ -114,23 +114,23 @@ ctx.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
 按时间问候 + 火花天数：
 
 ```js
-var 谁 = ctx.name || "朋友";
-var 招呼 = ctx.pick(["夜深了", "早安", "午安", "下午好", "晚上好"]);
-$spark_result$.push(招呼 + "，" + 谁 + "！第 " + ctx.days + " 天的火花，别忘了续上 🔥");
+var 谁 = ctx.io.name || "朋友";
+var 招呼 = ctx.builtin.pick(["夜深了", "早安", "午安", "下午好", "晚上好"]);
+$spark_result$.push(招呼 + "，" + 谁 + "！第 " + ctx.io.days + " 天的火花，别忘了续上 🔥");
 ```
 
 节日倒计时（配合宏使用）：
 
 ```js
-var 到元旦 = ctx.countdown("2027-01-01");
-$spark_result$.push(ctx.name + "，距离元旦还有 " + 到元旦 + " 天，先续个火花 ✨");
+var 到元旦 = ctx.builtin.countdown("2027-01-01");
+$spark_result$.push(ctx.io.name + "，距离元旦还有 " + 到元旦 + " 天，先续个火花 ✨");
 ```
 
 列表多行：
 
 ```js
-$spark_result$.push(ctx.name + "，今天聊两句？");
-$spark_result$.push("火花已经 " + ctx.days + " 天啦，别断了 🔥");
+$spark_result$.push(ctx.io.name + "，今天聊两句？");
+$spark_result$.push("火花已经 " + ctx.io.days + " 天啦，别断了 🔥");
 ```
 
 ## 六、脚本 API 参考
@@ -148,34 +148,44 @@ $spark_result$.push("火花已经 " + ctx.days + " 天啦，别断了 🔥");
 
 ### 6.2 变量
 
+上下文按**来源**分几个命名空间：`ctx.builtin`（内置能力，引擎自己算的）、
+`ctx.io`（抖音给的数据）、`ctx.template`（模板 / 会话变量）、`ctx.functions`（自定义函数）。
+
+**`ctx.builtin` —— 内置变量**
+
 | 变量 | 类型 | 说明 |
 | --- | --- | --- |
-| `ctx.date` | string | 当天日期 `yyyy-MM-dd` |
-| `ctx.time` | string | 当前时间 `HH:mm` |
-| `ctx.weekday` | string | 星期几 |
-| `ctx.timestamp` | number | 当前毫秒时间戳 |
-| `ctx.nickname` | string | 对方昵称 |
-| `ctx.remark` | string | 备注名（可能为空） |
-| `ctx.name` | string | 显示名（备注优先，其次昵称） |
-| `ctx.days` | number | 已连续聊天天数 |
-| `ctx.state` | number | 火花状态码（1 今天已互动 / 2 今天还没互动 / 3 待重燃） |
-| `ctx.stateText` | string | 火花状态文本 |
-| `ctx.peerUid` | string | 对方 UID |
-| `ctx.conversationId` | string | 会话 ID |
+| `ctx.builtin.date` | string | 当天日期 `yyyy-MM-dd` |
+| `ctx.builtin.time` | string | 当前时间 `HH:mm` |
+| `ctx.builtin.weekday` | string | 星期几 |
+| `ctx.builtin.timestamp` | number | 当前毫秒时间戳 |
 
-### 6.3 内置函数
+**`ctx.io` —— 从抖音取到的数据**
+
+| 变量 | 类型 | 说明 |
+| --- | --- | --- |
+| `ctx.io.nickname` | string | 对方昵称 |
+| `ctx.io.remark` | string | 备注名（可能为空） |
+| `ctx.io.name` | string | 显示名（备注优先，其次昵称） |
+| `ctx.io.days` | number | 已连续聊天天数 |
+| `ctx.io.state` | number | 火花状态码（1 今天已互动 / 2 今天还没互动 / 3 待重燃） |
+| `ctx.io.stateText` | string | 火花状态文本 |
+| `ctx.io.peerUid` | string | 对方 UID |
+| `ctx.io.conversationId` | string | 会话 ID |
+
+### 6.3 内置函数（`ctx.builtin`）
 
 | 调用 | 返回 | 说明 |
 | --- | --- | --- |
-| `ctx.pick(list)` | any | 从数组里随机取一个 |
-| `ctx.pad(n)` | string | 数字补零到两位 |
-| `ctx.repeat(s, n)` | string | 把字符串 s 重复 n 次 |
-| `ctx.random(a, b)` | number | `[a, b)` 区间内的随机整数 |
-| `ctx.shuffle(list)` | any[] | 洗牌，返回新数组 |
-| `ctx.countdown(target)` | number | 距目标日期还有几天（已过为负） |
-| `ctx.nextNewYear()` | string | 下一个元旦的日期字符串 |
-| `ctx.untilNewYear()` | number | 距下一个元旦还有几天 |
-| `ctx.formatDate(date, pattern)` | string | 按 `yyyy/MM/dd/HH/mm/ss` 格式化日期 |
+| `ctx.builtin.pick(list)` | any | 从数组里随机取一个 |
+| `ctx.builtin.pad(n)` | string | 数字补零到两位 |
+| `ctx.builtin.repeat(s, n)` | string | 把字符串 s 重复 n 次 |
+| `ctx.builtin.random(a, b)` | number | `[a, b)` 区间内的随机整数 |
+| `ctx.builtin.shuffle(list)` | any[] | 洗牌，返回新数组 |
+| `ctx.builtin.countdown(target)` | number | 距目标日期还有几天（已过为负） |
+| `ctx.builtin.nextNewYear()` | string | 下一个元旦的日期字符串 |
+| `ctx.builtin.untilNewYear()` | number | 距下一个元旦还有几天 |
+| `ctx.builtin.formatDate(date, pattern)` | string | 按 `yyyy/MM/dd/HH/mm/ss` 格式化日期 |
 | `ctx.template.名字` | 模板变量（见下方「模板变量」）。值是 JS 表达式，未定义则取父模板的值 |
 
 ### 6.4 自定义函数
@@ -193,7 +203,7 @@ function daysTo(date) {
 
 ```js
 // 定义好之后，模板/宏里这样调用
-$spark_result$.push(ctx.name + "，距离元旦还有 " + ctx.functions.daysTo("2027-01-01") + " 天");
+$spark_result$.push(ctx.io.name + "，距离元旦还有 " + ctx.functions.daysTo("2027-01-01") + " 天");
 ```
 
 规则：
@@ -213,7 +223,7 @@ $spark_result$.push(ctx.name + "，距离元旦还有 " + ctx.functions.daysTo("
 
 ```js
 // 宏里直接 push 就行：执行宏之前引擎已经保证 $spark_result$ 是列表
-$spark_result$.push("（元旦还有 " + ctx.countdown("2027-01-01") + " 天）");
+$spark_result$.push("（元旦还有 " + ctx.builtin.countdown("2027-01-01") + " 天）");
 ```
 
 - 入口：**宏/函数 → 宏 → ＋ 新增宏**，或模板编辑页 / 会话编辑页的「宏」按钮。
@@ -267,7 +277,7 @@ A：头像与备注来自抖音的会话数据，重启抖音后点「刷新会�
 - **继承的可以改、不能删**：改继承项的表达式就等于在这一层**覆盖**它（父模板不动），
   旁边会出现「⟲ 还原」把这一项恢复成父模板的值；想彻底不用它就改回父模板的值
 - **值是 JS 表达式**（不是固定字符串）：能读完整的 `ctx`，例如
-  `ctx.days > 100 ? "老朋友" : "朋友"`、`"宝" + (ctx.days % 2 ? "❤" : "")`
+  `ctx.io.days > 100 ? "老朋友" : "朋友"`、`"宝" + (ctx.io.days % 2 ? "❤" : "")`
 - **按上下顺序求值**：下面的表达式可以引用上面已经算出来的变量，
   如 `语气 = ctx.template.称呼 + "，晚上好"`
 - **会话的变量排在父模板之后**：会话没定义的用父模板的；**同名时以会话的为准**，
@@ -347,7 +357,7 @@ LSPosed 模块注入抖音进程，按你配置的**模板 / 变量 / 宏 / 函�
 
 ### 11.5 什么时候会发、什么时候不发
 
-会发：会话被判定今天还没互动（`ctx.state` 为 `2` 或 `3`），且（有模板 或 手动选中），且今天没发过。
+会发：会话被判定今天还没互动（`ctx.io.state` 为 `2` 或 `3`），且（有模板 或 手动选中），且今天没发过。
 
 不发：
 
@@ -358,11 +368,11 @@ LSPosed 模块注入抖音进程，按你配置的**模板 / 变量 / 宏 / 函�
 
 ### 11.6 怎么写才「贴合设计」
 
-1. **正文只写正文**：`ctx.name + "，"` 这类前缀属于变量（`称呼`），语气属于变量（`语气`），模板只把句子说出来。
-2. **多准备池子**：问候语、话题、表情用数组 + `ctx.pick()` 抽，避免每天一模一样。
+1. **正文只写正文**：`ctx.io.name + "，"` 这类前缀属于变量（`称呼`），语气属于变量（`语气`），模板只把句子说出来。
+2. **多准备池子**：问候语、话题、表情用数组 + `ctx.builtin.pick()` 抽，避免每天一模一样。
 3. **临时代码用宏**：节日倒计时、一次性祝福放宏里，用完删掉，模板一个字不动。
-4. **能算的别写死**：天数用 `ctx.days`、日期用 `ctx.date` / `ctx.formatDate`、倒计时用 `ctx.countdown`。
-5. **兜底**：`ctx.days` 可能是 0、`ctx.remark` 可能为空、变量可能是 `null` —— 用 `||` 或三元给默认值。
+4. **能算的别写死**：天数用 `ctx.io.days`、日期用 `ctx.builtin.date` / `ctx.builtin.formatDate`、倒计时用 `ctx.builtin.countdown`。
+5. **兜底**：`ctx.io.days` 可能是 0、`ctx.io.remark` 可能为空、变量可能是 `null` —— 用 `||` 或三元给默认值。
 6. **控制在 1~2 行**：拼成一条消息，太长不像真人。
 7. **别重复系统能力**：去重、每天只发一次已经做了，脚本里不用再判断今天发没发。
 
@@ -371,7 +381,7 @@ LSPosed 模块注入抖音进程，按你配置的**模板 / 变量 / 宏 / 函�
 - [ ] 语法是 ES5（`var`、字符串拼接），没有依赖箭头函数 / 模板字符串
 - [ ] 只用 `ctx.*` 和 `Math / JSON / Date / Array / String`，没有网络 / DOM
 - [ ] push 的最终都是字符串（数字先 `String(x)` 或 `+ ""`）
-- [ ] `ctx.name`、`ctx.days`、变量都有兜底（不会输出 `undefined` / `null`）
+- [ ] `ctx.io.name`、`ctx.io.days`、变量都有兜底（不会输出 `undefined` / `null`）
 - [ ] 不会超过 2 秒（没有大循环）
 - [ ] 至少一条路径会 push（否则这条永远不发）
 - [ ] 变量表达式只引用排在它前面的变量
@@ -382,14 +392,14 @@ LSPosed 模块注入抖音进程，按你配置的**模板 / 变量 / 宏 / 函�
 
 | 名字 | 表达式 |
 | --- | --- |
-| `称呼` | `ctx.nickname.slice(0, 2)` |
-| `语气` | `ctx.days > 100 ? "老朋友" : "朋友"` |
-| `尾巴` | `ctx.pick(["✨", "🔥", "🌙"])` |
+| `称呼` | `ctx.io.nickname.slice(0, 2)` |
+| `语气` | `ctx.io.days > 100 ? "老朋友" : "朋友"` |
+| `尾巴` | `ctx.builtin.pick(["✨", "🔥", "🌙"])` |
 
 **模板**
 
 ```js
-var hour = parseInt(ctx.time.split(":")[0], 10);
+var hour = parseInt(ctx.builtin.time.split(":")[0], 10);
 var hello =
   hour < 5 ? "夜深了" :
   hour < 11 ? "早" :
@@ -397,13 +407,13 @@ var hello =
   hour < 18 ? "下午好" : "晚上好";
 
 $spark_result$.push(ctx.template.称呼 + "，" + hello + "，今天也要好好吃饭" + ctx.template.尾巴);
-$spark_result$.push(ctx.template.语气 + "，火花 " + ctx.days + " 天啦，别断");
+$spark_result$.push(ctx.template.语气 + "，火花 " + ctx.io.days + " 天啦，别断");
 ```
 
 **宏（节日用，之后可删）**
 
 ```js
-$spark_result$.push("（元旦还有 " + ctx.countdown("2027-01-01") + " 天）");
+$spark_result$.push("（元旦还有 " + ctx.builtin.countdown("2027-01-01") + " 天）");
 ```
 
 发出去是一条消息里的三行：
@@ -420,10 +430,12 @@ $spark_result$.push("（元旦还有 " + ctx.countdown("2027-01-01") + " 天）"
 你在帮我写一个抖音自动续火花模块的模板脚本（JavaScript，Rhino 沙盒，2 秒上限，无网络/DOM/Java）。
 模块工作方式：每次发送时先合并两层变量（父模板 → 会话，同名覆盖、空值回落、都没有为 null），
 再注入自定义函数 ctx.functions.*，然后执行模板脚本，最后执行挂载的宏；
+上下文按来源分命名空间：ctx.builtin（内置变量与函数）、ctx.io（抖音给的会话数据）、
+ctx.template（模板/会话变量）、ctx.functions（自定义函数）—— 不要写成 ctx.name 这种旧写法。
 脚本通过 $spark_result$.push("...") 逐行添加内容，多行会被拼成一条消息，空列表表示这条不发。
-可用对象：ctx.date/time/weekday/timestamp/nickname/remark/name/days/state/stateText/peerUid/conversationId，
-ctx.template.<变量名>，以及 ctx.pick/pad/repeat/random/shuffle/countdown/nextNewYear/untilNewYear/formatDate。
+可用对象：ctx.builtin.date/time/weekday/timestamp/nickname/remark/name/days/state/stateText/peerUid/conversationId，
+ctx.template.<变量名>，以及 ctx.builtin.pick/pad/repeat/random/shuffle/countdown/nextNewYear/untilNewYear/formatDate。
 限制：只能用 var 与字符串拼接（ES5），只能用 Math/JSON/Date/Array/String 常规方法，不能有死循环。
-要求：1~2 行、口语化、每天有变化（用 ctx.pick）、对 ctx.days 与变量做兜底、不写死昵称。
+要求：1~2 行、口语化、每天有变化（用 ctx.builtin.pick）、对 ctx.io.days 与变量做兜底、不写死昵称。
 请先告诉我你打算放哪些变量（名字 + 表达式），再给出模板脚本与（可选的）宏脚本。
 ```

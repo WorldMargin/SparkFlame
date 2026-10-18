@@ -42,8 +42,8 @@ object SparkTypeScript {
             builder.append("\t").append(property(variable.name)).append(": any;\n")
         }
         builder.append("}\n")
-        builder.append("interface SparkCtx {\n")
-        SparkScriptEngine.VARIABLES.forEach { variable ->
+        builder.append("interface SparkBuiltin {\n")
+        SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.BUILTIN_OBJ }.forEach { variable ->
             builder.append("\t/** ").append(escape(variable.desc)).append(" */\n")
             builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")
         }
@@ -57,6 +57,19 @@ object SparkTypeScript {
                 .append(function.type)
                 .append(";\n")
         }
+        builder.append("}\n")
+        builder.append("interface SparkIo {\n")
+        builder.append("\t/** 从抖音取到的会话数据 */\n")
+        SparkScriptEngine.VARIABLES.filter { it.scope == SparkScriptEngine.IO_OBJ }.forEach { variable ->
+            builder.append("\t/** ").append(escape(variable.desc)).append(" */\n")
+            builder.append("\t").append(variable.name).append(": ").append(variable.type).append(";\n")
+        }
+        builder.append("}\n")
+        builder.append("interface SparkCtx {\n")
+        builder.append("\t/** 内置能力：日期时间 + 内置函数 */\n")
+        builder.append("\tbuiltin: SparkBuiltin;\n")
+        builder.append("\t/** 宿主数据：抖音给的会话信息 */\n")
+        builder.append("\tio: SparkIo;\n")
         builder.append("\t/** 自定义函数（在「宏/函数」页定义） */\n")
         builder.append("\tfunctions: SparkFunctions;\n")
         builder.append("\t/** 模板变量（在模板编辑页的「变量」卡里定义） */\n")

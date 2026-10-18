@@ -10,7 +10,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import com.worldmargin.autospark.core.HostRuntime
 import com.worldmargin.autospark.core.ModLog
-import com.worldmargin.autospark.features.autospark.bridge.AutoSparkBridge
+import com.worldmargin.autospark.host.bridge.AutoSparkBridge
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**

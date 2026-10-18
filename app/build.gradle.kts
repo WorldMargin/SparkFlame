@@ -84,33 +84,35 @@ android {
 dependencies {
     compileOnly(libs.libxposed.api)
     implementation(libs.rhino)
-    implementation(platform(libs.sora.editor.bom))
-    implementation(libs.sora.editor)
     implementation(libs.webkit)
 }
 
 /**
- * 使用文档：把仓库根目录的 Markdown 同步进 assets（App 内的「使用文档」直接读这份），
- * 保证单一来源 —— 改文档不用改两处。
+ * 使用文档：仓库里只保留一份 `docs/manual.md`（网页上能直接看，也方便丢给 AI）。
  *
- * 同一份文档还会写一份到仓库的 `docs/manual.md`：网页上能直接看，也方便把链接丢给 AI。
+ * 改动流程：写仓库根目录的 `使用文档.md` → 构建时同步到 `docs/manual.md` → 再复制进
+ * `assets/docs/manual.md` 给 App 读。assets 里那份是构建产物，不入库。
  */
 val manualSource = layout.projectDirectory.file("../../使用文档.md")
-val syncManual =
-    tasks.register<Copy>("syncManual") {
-        onlyIf { manualSource.asFile.exists() }
-        from(manualSource)
-        into(layout.projectDirectory.dir("src/main/assets/docs"))
-        rename { "manual.md" }
-    }
 
-/** `docs/manual.md`：对外的那一份（assets 里那份只给 App 用，网页上不好找）。 */
+/** `docs/manual.md`：仓库里唯一入库的那一份。 */
 val syncManualToRepo =
     tasks.register<Copy>("syncManualToRepo") {
         onlyIf { manualSource.asFile.exists() }
         from(manualSource)
         into(rootProject.layout.projectDirectory.dir("docs"))
         rename { "manual.md" }
+    }
+
+/** `assets/docs/manual.md`：App 内使用文档，构建时从 `docs/manual.md` 复制，不入库。 */
+val syncManual =
+    tasks.register<Copy>("syncManual") {
+        val repoSingle = rootProject.layout.projectDirectory.file("docs/manual.md")
+        onlyIf { repoSingle.asFile.exists() }
+        from(repoSingle)
+        into(layout.projectDirectory.dir("src/main/assets/docs"))
+        rename { "manual.md" }
+        dependsOn(syncManualToRepo)
     }
 
 tasks.named("preBuild") { dependsOn(syncManual, syncManualToRepo) }

@@ -7,7 +7,7 @@ import io.github.libxposed.api.XposedInterface
  * 统一日志出口（libxposed 通道）：未 bind 前静默丢弃，不落系统 Log。
  */
 object ModLog {
-    private const val TAG = "DouMCP"
+    private const val TAG = "SparkFlame"
 
     @Volatile
     private var xposed: XposedInterface? = null

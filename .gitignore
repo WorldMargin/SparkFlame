@@ -23,3 +23,6 @@ release-signing.properties
 build_log*.txt
 tmp/
 build_status.txt
+
+# App \u5185\u7684\u4f7f\u7528\u6587\u6863\u7531\u6784\u5efa\u4ece docs/manual.md \u751f\u6210
+app/src/main/assets/docs/manual.md

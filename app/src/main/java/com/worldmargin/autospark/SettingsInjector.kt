@@ -11,9 +11,9 @@ import android.widget.Toast
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
-import com.worldmargin.autospark.features.autospark.bridge.AutoSparkBridge
+import com.worldmargin.autospark.host.bridge.AutoSparkBridge
 import com.worldmargin.autospark.core.ModLog
-import com.worldmargin.autospark.features.autospark.ui.SparkSettingsActivity
+import com.worldmargin.autospark.app.ui.settings.SparkSettingsActivity
 import java.lang.reflect.Method
 
 /**

@@ -200,10 +200,12 @@ object SparkScriptEngine {
             // 结果变量统一按**列表**初始化：脚本用 `$spark_result$.push("…")` 逐行添加。
             // 隐式赋值建立的是可配置的全局属性，用户随后写 var / let / const 也不会重声明报错。
             // 直接赋字符串（`= "…"`）同样接受，[flatten] 会把它当一行处理。
+            // \u5f00\u5934\u7684 `;` \u5f88\u5173\u952e\uff1a\u811a\u672c\u4ee5 `)` / `]` \u7ed3\u5c3e\u4e14\u6ca1\u5199\u5206\u53f7\u65f6\uff0c
+            // \u4e0b\u4e00\u884c\u4ee5 `(` \u5f00\u5934\u4f1a\u88ab ASI \u5f53\u6210\u8fde\u7eed\u8c03\u7528\uff08push(..)(..) \u2192 \u6570\u5b57\u4e0d\u662f\u51fd\u6570\uff09
             val program =
                 "$RESULT_VAR = [];\n" +
                     script +
-                    "\n(typeof $RESULT_VAR === 'undefined' || $RESULT_VAR == null)" +
+                    "\n;\n(typeof $RESULT_VAR === 'undefined' || $RESULT_VAR == null)" +
                     " ? undefined : $RESULT_VAR;"
             val result = cx.evaluateString(scope, program, "autospark", 1, null)
             if (result == null || result == Scriptable.NOT_FOUND || result == Undefined.instance) {

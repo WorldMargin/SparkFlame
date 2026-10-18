@@ -12,7 +12,7 @@
         <!-- 配置跨进程通道：管理界面（模块进程）写，宿主（抖音进程）读 -->
         <provider
             android:name=".features.autospark.provider.ConfigProvider"
-            android:authorities="com.worldmargin.autospark.config"
+            android:authorities="io.github.worldmargin.sparkflame.config"
             android:exported="true" />
 
         <!-- 宿主写配置前先唤醒本模块进程（见 WakeReceiver 注释），否则 provider 调不通 -->

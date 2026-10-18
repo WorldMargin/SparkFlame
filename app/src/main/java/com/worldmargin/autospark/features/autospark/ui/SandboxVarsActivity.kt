@@ -150,6 +150,10 @@ class SandboxVarsActivity : Activity() {
             }
             result += SandboxVar(owner, key, raw.ifEmpty { "null" })
         }
+        // 直接写回配置：沙盒变量不属于宏脚本那份草稿，不能等宏编辑页的保存
+        com.worldmargin.autospark.features.autospark.store.ConfigStore.update(this) { config ->
+            config.copy(sandbox = config.sandbox.filterNot { it.owner == owner } + result)
+        }
         setResult(RESULT_OK, Intent().putExtra(RESULT_VARS, ConfigCodec.encodeSandbox(result)))
         finish()
     }

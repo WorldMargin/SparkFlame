@@ -181,7 +181,6 @@ class MacroEditActivity : Activity() {
                     appliesTo = targets,
                     updatedAt = now,
                 )
-            val owner = "macro:" + next.id
             config.copy(
                 macros =
                     if (existed) {
@@ -191,11 +190,16 @@ class MacroEditActivity : Activity() {
                         existed = true
                         config.macros + next
                     },
-                sandbox = config.sandbox.filterNot { it.owner == owner } + sandbox.map { it.copy(owner = owner) },
             )
         }
         Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
         finish()
+    }
+
+    private fun reloadSandbox() {
+        sandbox =
+            macroId?.let { id -> com.worldmargin.autospark.features.autospark.store.ConfigStore.load(this).sandbox.filter { it.owner == "macro:" + id } }
+                .orEmpty()
     }
 
     private fun sandboxLabel(): String = "沙盒变量（仅这个宏可读写）· " + sandbox.size + " 个"
@@ -219,9 +223,7 @@ class MacroEditActivity : Activity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_SANDBOX && resultCode == RESULT_OK) {
-            sandbox =
-                com.worldmargin.autospark.features.autospark.model.ConfigCodec
-                    .decodeSandbox(data?.getStringExtra(SandboxVarsActivity.RESULT_VARS))
+            reloadSandbox()
             sandboxEntry.text = sandboxLabel()
         }
     }

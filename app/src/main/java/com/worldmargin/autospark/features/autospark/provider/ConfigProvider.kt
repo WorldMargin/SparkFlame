@@ -10,7 +10,7 @@ import com.worldmargin.autospark.features.autospark.store.ConfigStore
 
 /** 跨进程配置通道的契约常量（模块进程与抖音进程共用）。 */
 object ConfigContract {
-    const val AUTHORITY = "com.worldmargin.autospark.config"
+    const val AUTHORITY = "io.github.worldmargin.sparkflame.config"
     val URI: Uri = Uri.parse("content://$AUTHORITY")
 
     /** 读取全量配置，返回 Bundle["json"]。 */

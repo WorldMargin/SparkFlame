@@ -205,10 +205,23 @@ $spark_result$.push("（第 " + n + " 次加这句）");
 | 调用 | 说明 |
 | --- | --- |
 | `ctx.system.getAllConversation()` | 本轮可见的会话数组：`{id, name, remark, days, state, stateText, isGroup}` |
-| `ctx.system.mountMacro(name)` | 把名为 `name` 的宏挂到**当前会话** |
-| `ctx.system.unmountMacro(name)` | 从当前会话摘掉名为 `name` 的宏 |
+| `ctx.system.mountMacro(name, target?)` | 把宏挂到指定目标（不传 = 当前会话） |
+| `ctx.system.unmountMacro(name, target?)` | 从指定目标摘掉这个宏 |
+| `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
+
+`target` 用对象传：
+
+```js
+ctx.system.mountMacro("沙盒测试", { conversation: "会话 id" });        // 挂到具体会话
+ctx.system.mountMacro("沙盒测试", { template: "模板 id" });          // 挂到模板，跟着派生会话一起跑
+ctx.system.mountMacro("沙盒测试", { template: "模板 id", inherit: false }); // 仅模板：不往派生会话传播
+ctx.system.unmountAll();                                        // 把当前会话上的宏全摘掉
+```
+
+「仅模板」只在该模板自己的试算 / 预览里跑，派生会话不受影响。
 
 会话列表来自本轮扫描的结果，不额外请求网络；宏挂载在这一轮跑完后统一写回配置，**下一轮生效**。
+手动管理：宏编辑页里的「沙盒变量」一行点进去，可改名 / 改 JSON 值 / 删除 / 新增（单独一页，不和脚本编辑器挤在一起）。
 
 ### 6.6 内置函数（`ctx.builtin`）
 

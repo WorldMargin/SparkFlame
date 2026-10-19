@@ -1,10 +1,12 @@
 package com.worldmargin.autospark.app.script
 
 import com.worldmargin.autospark.app.config.SandboxVar
+import com.worldmargin.autospark.core.ModLog
 import org.json.JSONObject
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
+import org.mozilla.javascript.Function
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Undefined
@@ -13,10 +15,21 @@ import org.mozilla.javascript.Undefined
 class ScriptTimeoutException : RuntimeException("脚本执行超时（可能存在死循环）")
 
 /**
+ * 脚本执行完了，但 `ctx.result` 是空的：这一条不发（按「跳过」处理，不算失败）。
+ *
+ * 把已经注册的回调一起带出去，宿主还能给脚本回一个 `Skipped`。
+ */
+class EmptyResultException(
+    message: String,
+    val callbacks: List<Function>,
+) : RuntimeException(message)
+
+/**
  * 动态文案脚本引擎（Rhino JS 沙盒）。
  *
- * 宿主把上下文挂到沙盒里的 `ctx` 上，脚本把要发送的文本赋给固定变量 [RESULT_VAR]
- * （`$spark_result$`），引擎只读该变量（不会去取「最后一个表达式」的值）。
+ * 宿主把上下文挂到沙盒里的 `ctx` 上，脚本把要发送的文本 push 进 `ctx.result`
+ *（老写法 [RESULT_VAR] `$spark_result$` 仍然可用，两者是同一个数组），
+ * 引擎只读这个列表（不会去取「最后一个表达式」的值）。
  *
  * `ctx` 下面按来源分命名空间：
  * - [BUILTIN_OBJ]：内置能力 —— 日期时间等内置变量与 [FUNCTIONS]（`ctx.builtin.pick(...)`）
@@ -38,6 +51,24 @@ object SparkScriptEngine {
 
     /** 脚本约定的输出变量名：脚本给它赋值，引擎读它。 */
     const val RESULT_VAR = "\$spark_result\$"
+
+    /** 输出列表的新写法：`ctx.result`（和 [RESULT_VAR] 是同一个数组，两种写法都认）。 */
+    const val RESULT_OBJ = "result"
+
+    /** 会话结果回调用法：`ctx.registerCallback((res) => { ... })`。 */
+    const val CALLBACK_FN = "registerCallback"
+
+    /** [CALLBACK_FN] 的旧拼写（早期文档里写成 registCallback，保留兼容）。 */
+    const val CALLBACK_FN_ALIAS = "registCallback"
+
+    /** 回调结果：发送成功。 */
+    const val SEND_SUCCEED = "Succeed"
+
+    /** 回调结果：这一条跳过了（例如脚本没有产出内容）。 */
+    const val SEND_SKIPPED = "Skipped"
+
+    /** 回调结果：发送失败（带失败原因）。 */
+    const val SEND_FAILED = "Failed"
 
     /** 用户自定义函数挂载点：`ctx.functions.<名字>`。 */
     const val FUNCTIONS_OBJ = "functions"
@@ -101,6 +132,8 @@ object SparkScriptEngine {
         val sandboxDeletes: List<SandboxVar>,
         /** 宏挂载改动（见 [MacroOp]）。 */
         val macroOps: List<MacroOp>,
+        /** 脚本用 `ctx.registerCallback` 注册的会话结果回调（发送后由宿主触发）。 */
+        val callbacks: List<Function> = emptyList(),
     )
 
     /**
@@ -207,24 +240,32 @@ object SparkScriptEngine {
 
             cx.evaluateString(scope, MACROS, "macros", 1, null)
 
-            // 结果变量统一按**列表**初始化：脚本用 `$spark_result$.push("…")` 逐行添加。
+            // 结果统一按**列表**初始化：脚本用 `ctx.result.push("…")` 或
+            // `$spark_result$.push("…")` 逐行添加（两者是同一个数组）。
             // 隐式赋值建立的是可配置的全局属性，用户随后写 var / let / const 也不会重声明报错。
-            // 直接赋字符串（`= "…"`）同样接受，[flatten] 会把它当一行处理。
-            // \u5f00\u5934\u7684 `;` \u5f88\u5173\u952e\uff1a\u811a\u672c\u4ee5 `)` / `]` \u7ed3\u5c3e\u4e14\u6ca1\u5199\u5206\u53f7\u65f6\uff0c
-            // \u4e0b\u4e00\u884c\u4ee5 `(` \u5f00\u5934\u4f1a\u88ab ASI \u5f53\u6210\u8fde\u7eed\u8c03\u7528\uff08push(..)(..) \u2192 \u6570\u5b57\u4e0d\u662f\u51fd\u6570\uff09
+            // 直接赋字符串（`ctx.result = "…"`）同样接受，[flatten] 会把它当一行处理。
+            // 开头的 `;` 很关键：脚本以 `)` / `]` 结尾且没写分号时，
+            // 下一行以 `(` 开头会被 ASI 当成连续调用（push(..)(..) → 数字不是函数）
             val program =
                 "$RESULT_VAR = [];\n" +
+                    "$CTX.$RESULT_OBJ = $RESULT_VAR;\n" +
+                    "__sb.result0 = $RESULT_VAR;\n" +
                     script +
-                    "\n;\n(typeof $RESULT_VAR === 'undefined' || $RESULT_VAR == null)" +
-                    " ? undefined : $RESULT_VAR;"
+                    "\n;\n" +
+                    "__sparkSyncResult();\n" +
+                    "(typeof $CTX.$RESULT_OBJ === 'undefined' || $CTX.$RESULT_OBJ == null)" +
+                    " ? ((typeof $RESULT_VAR === 'undefined' || $RESULT_VAR == null) ? undefined : $RESULT_VAR)" +
+                    " : $CTX.$RESULT_OBJ;"
             val result = cx.evaluateString(scope, program, "autospark", 1, null)
             if (result == null || result == Scriptable.NOT_FOUND || result == Undefined.instance) {
-                throw IllegalStateException("脚本没有给 $RESULT_VAR 赋值")
+                throw IllegalStateException("脚本没有给 ctx.result（或 $RESULT_VAR）赋值")
             }
             val text = flatten(result).trim()
             val changes = collectChanges(cx, scope)
-            if (text.isEmpty()) throw IllegalStateException("$RESULT_VAR 是空的（没有内容可发送）")
-            return Rendered(text, changes.writes, changes.deletes, changes.ops)
+            val callbacks = collectCallbacks(scope)
+            // 空结果按「跳过」处理（文档口径：空列表 = 这条不发），把回调一起带出去，宿主可以回一个 Skipped
+            if (text.isEmpty()) throw EmptyResultException("ctx.result 是空的（没有内容可发送）", callbacks)
+            return Rendered(text, changes.writes, changes.deletes, changes.ops, callbacks)
         } finally {
             Context.exit()
         }
@@ -290,6 +331,53 @@ object SparkScriptEngine {
 
     private fun org.json.JSONArray?.orEmptyLength(): Int = this?.length() ?: 0
 
+    /**
+     * 发送结束后触发脚本注册的会话结果回调，参数是 `{conversationId, result, reason?}`。
+     *
+     * [result] 取 [SEND_SUCCEED] / [SEND_SKIPPED] / [SEND_FAILED]；[reason] 有具体原因时才带。
+     * 回调里对沙盒 / 宏的改动会重新收集一遍返回（和渲染时收集的有重复，
+     * 落盘是幂等的，后写的值生效）。预览模式不注册回调，这里直接返回空结果。
+     */
+    fun notifySendResult(
+        callbacks: List<Function>,
+        conversationId: String,
+        result: String,
+        reason: String = "",
+    ): Rendered {
+        if (callbacks.isEmpty()) return Rendered("", emptyList(), emptyList(), emptyList())
+        val scope = callbacks.first().parentScope ?: return Rendered("", emptyList(), emptyList(), emptyList())
+        val factory = TimeoutFactory(System.currentTimeMillis() + TIMEOUT_MS)
+        val cx = factory.enterContext()
+        try {
+            cx.optimizationLevel = -1
+            cx.languageVersion = Context.VERSION_ES6
+            cx.setClassShutter(denyJava)
+            cx.instructionObserverThreshold = OBSERVER_THRESHOLD
+            val argument = cx.newObject(scope)
+            ScriptableObject.putProperty(argument, "conversationId", conversationId)
+            ScriptableObject.putProperty(argument, "result", result)
+            if (reason.isNotBlank()) ScriptableObject.putProperty(argument, "reason", reason)
+            callbacks.forEach { callback ->
+                runCatching { callback.call(cx, scope, scope, arrayOf<Any>(argument)) }
+                    .onFailure { ModLog.w("会话结果回调执行失败", it) }
+            }
+            val changes = collectChanges(cx, scope)
+            return Rendered("", changes.writes, changes.deletes, changes.ops)
+        } finally {
+            Context.exit()
+        }
+    }
+
+    /** 取出脚本用 `ctx.registerCallback` 注册的回调（预览模式下为空）。 */
+    private fun collectCallbacks(scope: Scriptable): List<Function> {
+        val state = ScriptableObject.getProperty(scope, SANDBOX_STATE_VAR) as? Scriptable ?: return emptyList()
+        val array = ScriptableObject.getProperty(state, "callbacks") as? Scriptable ?: return emptyList()
+        val length = (ScriptableObject.getProperty(array, "length") as? Number)?.toInt() ?: 0
+        return (0 until length).mapNotNull { index ->
+            ScriptableObject.getProperty(array, index) as? Function
+        }
+    }
+
     private data class Changes(
         val writes: List<SandboxVar> = emptyList(),
         val deletes: List<SandboxVar> = emptyList(),
@@ -352,13 +440,19 @@ object SparkScriptEngine {
     /** 系统接口：挂在 `ctx.system` 下。 */
     val SYSTEM_FUNCTIONS: List<Doc> =
         listOf(
-            Doc("getAllConversation", "", "本轮所有会话：[{id,name,remark,days,state,stateText,isGroup}]", "any[]", SYSTEM_OBJ),
-            Doc("getConversation", "id", "按会话 id 取信息结构（没有返回 null）", "any", SYSTEM_OBJ),
-            Doc("getTemplate", "id", "按模板 id 取信息结构（id/name/body/childs/isBuiltin）", "any", SYSTEM_OBJ),
-            Doc("getMacro", "id", "按宏 id 取信息结构（id/name/body/templates/conversations）", "any", SYSTEM_OBJ),
-            Doc("mountMacro", "id, target?", "按宏 id 挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
-            Doc("unmountMacro", "id, target?", "按宏 id 从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
-            Doc("unmountAll", "target?", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
+            Doc(
+                "getAllConversation",
+                "filter?: SparkConversationFilter",
+                "本轮会话；可按条件筛（对象逐项相等，数组表示其中之一，函数自定义判断）",
+                "SparkConversation[]",
+                SYSTEM_OBJ,
+            ),
+            Doc("getConversation", "id: string", "按会话 id 取信息结构（没有返回 null）", "SparkConversationDetail | null", SYSTEM_OBJ),
+            Doc("getTemplate", "id: string", "按模板 id 取信息结构（id/name/body/childs/isBuiltin）", "any", SYSTEM_OBJ),
+            Doc("getMacro", "id: string", "按宏 id 取信息结构（id/name/body/templates/conversations）", "any", SYSTEM_OBJ),
+            Doc("mountMacro", "id: string, target?: any", "按宏 id 挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
+            Doc("unmountMacro", "id: string, target?: any", "按宏 id 从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
+            Doc("unmountAll", "target?: any", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
         )
 
     /**
@@ -431,7 +525,7 @@ object SparkScriptEngine {
         ctx.template.template = __sb.tpl.template || { id: "", name: "" };
         ctx.template.parent = __sb.tpl.parent || { id: "", name: "", childs: [] };
         __sb.convs = (__sb.convJson && __sb.convJson.length > 1) ? JSON.parse(__sb.convJson) : [];
-        __sb.writes = []; __sb.deletes = []; __sb.ops = []; __sb.owner = "";
+        __sb.writes = []; __sb.deletes = []; __sb.ops = []; __sb.owner = ""; __sb.callbacks = [];
 
         // 沙盒变量：**只给宏用**，归属就是宏自己（模板里 ctx.macro 是 undefined）。
         // 每个宏执行前，程序里会插一句 __sandboxOwner("macro:<宏 id>")
@@ -490,6 +584,21 @@ object SparkScriptEngine {
           ctx.macro.name = isMacro ? (__sb.names[__sb.macroId] || "") : "";
         }
 
+        // 结果列表：老写法 ${'$'}spark_result${'$'} 与新写法 ctx.result 指向同一个数组。
+        // 宏执行前、程序结束时各同步一次（脚本可能把其中一个换成了字符串或新数组）。
+        function __sparkSyncResult(){
+          var initial = __sb.result0;
+          var old = ${'$'}spark_result${'$'}, api = ctx.result, chosen;
+          if (old !== initial && old !== undefined && old !== null) chosen = old;
+          else if (api !== initial && api !== undefined && api !== null) chosen = api;
+          else chosen = (old !== undefined && old !== null) ? old : api;
+          if (typeof chosen === "string") chosen = [chosen];
+          if (Object.prototype.toString.call(chosen) !== "[object Array]") chosen = [chosen];
+          ${'$'}spark_result${'$'} = chosen;
+          ctx.result = chosen;
+          __sb.result0 = chosen;
+        }
+
         // 系统接口：会话列表 + 宏挂载
         // target 可以是：不传（当前会话）/ { conversation: "id" } / { template: "id", inherit: true|false }
         function __targetOf(target){
@@ -512,8 +621,28 @@ object SparkScriptEngine {
           var hit = table[String(id)];
           return hit || null;
         }
+        // 会话筛选：参数可以是函数（逐项判断），也可以是对象
+        //（每个键都要相等；值是数组表示「其中之一」；值是函数表示自定义判断）
+        function __matchConversation(item, filter){
+          if (!filter) return true;
+          for (var key in filter){
+            if (!Object.prototype.hasOwnProperty.call(filter, key)) continue;
+            var want = filter[key];
+            if (typeof want === "function"){ if (!want(item)) return false; continue; }
+            var actual = item[key];
+            if (Object.prototype.toString.call(want) === "[object Array]"){
+              if (want.indexOf(actual) < 0) return false;
+            } else if (actual !== want){
+              return false;
+            }
+          }
+          return true;
+        }
         ctx.system = {
-          getAllConversation: function(){ return __sb.convs; },
+          getAllConversation: function(filter){
+            if (typeof filter === "function") return __sb.convs.filter(filter);
+            return __sb.convs.filter(function(item){ return __matchConversation(item, filter); });
+          },
           getConversation: function(id){ return __lookup("conversations", id); },
           getTemplate: function(id){ return __lookup("templates", id); },
           getMacro: function(id){ return __lookup("macros", id); },
@@ -535,5 +664,14 @@ object SparkScriptEngine {
             __sb.ops.push(["unmountAll", "", t[0], t[1]]);
           }
         };
+
+        // 会话结果回调：脚本注册，宿主在「这个会话发送结束」后调用，参数 {conversationId, success}
+        function __registCallback(fn){
+          if (typeof fn !== "function") throw new Error("ctx.registerCallback 需要一个函数");
+          if (__sb.preview) return;
+          __sb.callbacks.push(fn);
+        }
+        ctx.registerCallback = __registCallback;
+        ctx.registCallback = __registCallback;
         """.trimIndent()
 }

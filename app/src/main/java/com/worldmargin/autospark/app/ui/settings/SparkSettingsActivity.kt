@@ -153,9 +153,16 @@ class SparkSettingsActivity : Activity() {
     private var templateQuery = ""
     private var macroQuery = ""
 
+    /** 宏 / 函数列表的折叠状态（列表可能很长，默认展开）。 */
+    private var macrosCollapsed = false
+    private var functionsCollapsed = false
+
     /** 「续火花」页两个分组卡片的折叠状态。 */
     private var singlesCollapsed = false
     private var groupsCollapsed = false
+
+    /** 「被隐藏」卡片的折叠状态（默认收起，不占地方）。 */
+    private var hiddenCollapsed = true
 
     /** 多选中的会话 ID。 */
     private val selected = linkedSetOf<String>()
@@ -516,7 +523,7 @@ class SparkSettingsActivity : Activity() {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
         when (key) {
             SUB_OVERVIEW -> {
-                val conversations = config.snapshots.filter { !it.isGroup }
+                val conversations = config.snapshots.filter { !it.isGroup && !it.isHidden }
                 val renewal = conversations.filter { config.needsRenewal(it) }
                 val today = todayText()
                 val pending = renewal.filter { it.state == SPARK_PENDING }
@@ -628,7 +635,15 @@ class SparkSettingsActivity : Activity() {
                         addView(infoLine("会话文案", "${config.conversations.size} 条"))
                         addView(infoLine("宏", "${config.macros.size} 个"))
                         addView(infoLine("自定义函数", "${config.functions.size} 个"))
-                        addView(infoLine("会话快照", "${config.snapshots.size} 条"))
+                        addView(
+                            infoLine(
+                                "会话快照",
+                                "${config.snapshots.count { !it.isHidden }} 条" +
+                                    config.snapshots.count { it.isHidden }.let { hidden ->
+                                        if (hidden > 0) "（另有 $hidden 条已隐藏）" else ""
+                                    },
+                            ),
+                        )
                     },
                 )
             }
@@ -710,7 +725,9 @@ class SparkSettingsActivity : Activity() {
     /** 「续火花」页：内层「已选目标 / 未选目标」两页 + 勾选后的批量移动条。 */
     private fun buildSparkPage(config: SparkConfig): View {
         // 群聊也进列表，但和单聊分成两张卡片（群聊默认不自动发送，要手动移进已选目标/勾选发送）
-        val conversations = config.snapshots
+        // 连续多次没在抖音出现的会话（isHidden）不进列表，统一收进下方「被隐藏」折叠卡片
+        val conversations = config.snapshots.filter { !it.isHidden }
+        val hidden = config.snapshots.filter { it.isHidden }
         val renewal = conversations.filter { config.needsRenewal(it) }
         val idle = conversations.filterNot { config.needsRenewal(it) }
         val page = column().apply { setPadding(dp(16), 0, dp(16), dp(8)) }
@@ -754,7 +771,17 @@ class SparkSettingsActivity : Activity() {
         val current = if (sparkPage == PAGE_SELECTED) renewal else idle
         val list = column().apply { setPadding(0, dp(8), 0, dp(16)) }
         if (conversations.isEmpty()) {
-            list.addView(text("没有会话快照。先打开一次抖音，再回来点「设置 → 刷新会话」。", 14f, COLOR_DIM))
+            list.addView(
+                text(
+                    if (config.snapshots.isEmpty()) {
+                        "没有会话快照。先打开一次抖音，再回来点「设置 → 刷新会话」。"
+                    } else {
+                        "所有会话都已隐藏（连续 ${SparkConfig.HIDDEN_AFTER_MISSES} 次未出现）。打开抖音刷新后会重新出现。"
+                    },
+                    14f,
+                    COLOR_DIM,
+                ),
+            )
         } else {
             list.addView(
                 text(
@@ -809,10 +836,108 @@ class SparkSettingsActivity : Activity() {
                 },
             )
         }
+        if (hidden.isNotEmpty()) list.addView(buildHiddenSection(config, hidden))
         page.addView(scroll().apply { addView(list) })
         page.addView(buildSelectionBar())
         applySelection()
         return page
+    }
+
+    /**
+     * 「被隐藏」分组卡片：连续多次没在抖音出现的会话收在这里（默认收起）。
+     *
+     * 隐藏不等于删除：快照要到 [SparkConfig.SNAPSHOT_GRACE_MS] 之后才清掉，
+     * 期间重新出现会自动恢复。这里提供两个出口：恢复显示、把手动归属移出「已选目标」。
+     */
+    private fun buildHiddenSection(
+        config: SparkConfig,
+        hidden: List<ConversationSnapshot>,
+    ): View =
+        sectionCard(
+            title = "被隐藏",
+            count = hidden.size,
+            hint = "连续 ${SparkConfig.HIDDEN_AFTER_MISSES} 次没在抖音出现就从列表隐藏，" +
+                "满 30 天连快照一起删除；重新出现会自动恢复。",
+            collapsed = hiddenCollapsed,
+            onToggle = { hiddenCollapsed = it },
+            items = hidden.map { snapshot -> hiddenRow(config, snapshot) },
+        )
+
+    /** 隐藏列表里的一行：名字 + 最后出现时间/次数 + 恢复 / 移出目标；点整行进会话编辑页。 */
+    private fun hiddenRow(
+        config: SparkConfig,
+        snapshot: ConversationSnapshot,
+    ): View {
+        val manual = snapshot.conversationId in config.forcedRenew
+        val lastSeen = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(snapshot.updatedAt))
+        return flatRow().apply {
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(snapshot.displayName.ifBlank { "(无名)" }, 15f, COLOR_TEXT, bold = true))
+                    addView(
+                        text(
+                            (if (manual) "手动移入 · " else "") +
+                                "最后出现 $lastSeen · 连续 ${snapshot.missCount} 次未出现",
+                            12f,
+                            COLOR_DIM,
+                        ),
+                    )
+                },
+            )
+            if (manual) {
+                addView(
+                    text("移出目标", 13f, COLOR_ACCENT).apply {
+                        isClickable = true
+                        setPadding(dp(8), 0, dp(12), 0)
+                        setOnClickListener { confirmRemoveTarget(snapshot) }
+                    },
+                )
+            }
+            addView(
+                text("恢复", 13f, COLOR_ACCENT).apply {
+                    isClickable = true
+                    setOnClickListener { restoreHidden(snapshot.conversationId) }
+                },
+            )
+            isClickable = true
+            setOnClickListener { openTemplateOrConversation(snapshot.conversationId, false) }
+        }
+    }
+
+    /** 恢复显示：把连续未出现计数清零（下次扫描还没出现会重新隐藏）。 */
+    private fun restoreHidden(conversationId: String) {
+        ConfigStore.update(this) { config ->
+            config.copy(
+                snapshots =
+                    config.snapshots.map { snapshot ->
+                        if (snapshot.conversationId == conversationId) snapshot.copy(missCount = 0) else snapshot
+                    },
+            )
+        }
+        Toast.makeText(this, "已恢复显示；下次扫描如果还没出现会重新隐藏", Toast.LENGTH_SHORT).show()
+        render()
+    }
+
+    /** 把会话从手动归属里拿掉（只动「已选目标」，快照按保留策略自己过期）。 */
+    private fun confirmRemoveTarget(snapshot: ConversationSnapshot) {
+        val name = snapshot.displayName.ifBlank { "(无名)" }
+        AlertDialog
+            .Builder(this)
+            .setTitle("把「$name」移出已选目标？")
+            .setMessage("它仍然留在「被隐藏」列表里，快照保留到 30 天后自动清除。")
+            .setPositiveButton("移出") { _, _ ->
+                ConfigStore.update(this) { config ->
+                    config.copy(
+                        forcedRenew = config.forcedRenew - snapshot.conversationId,
+                        forcedSkip = config.forcedSkip - snapshot.conversationId,
+                    )
+                }
+                Toast.makeText(this, "已移出已选目标", Toast.LENGTH_SHORT).show()
+                render()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     /**
@@ -1444,7 +1569,7 @@ class SparkSettingsActivity : Activity() {
         name: String,
         body: String,
     ) {
-        val snapshots = ConfigStore.load(this).snapshots.filter { !it.isGroup }
+        val snapshots = ConfigStore.load(this).snapshots.filter { !it.isGroup && !it.isHidden }
         if (snapshots.isEmpty()) {
             Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
             return
@@ -1498,7 +1623,7 @@ class SparkSettingsActivity : Activity() {
         templateName: String,
     ) {
         val config = ConfigStore.load(this)
-        val snapshots = config.snapshots.filter { !it.isGroup }
+        val snapshots = config.snapshots.filter { !it.isGroup && !it.isHidden }
         if (snapshots.isEmpty()) {
             Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
             return
@@ -2059,23 +2184,43 @@ class SparkSettingsActivity : Activity() {
     ) {
         if (config.macros.isEmpty()) {
             body.addView(text("还没有宏", 14f, COLOR_DIM))
-        } else {
-            config.macros.forEach { macro ->
-                val targetNames = macroTargetNames(config, macro)
-                body.addView(
-                    card().apply {
-                        addView(text(macro.name.ifBlank { "(未命名宏)" }, 16f, bold = true))
-                        addView(
-                            text(
-                                if (targetNames.isEmpty()) "未挂到任何模板或会话" else targetNames.joinToString("、"),
-                                13f,
-                                if (targetNames.isEmpty()) COLOR_WARN else COLOR_DIM,
-                            ),
-                        )
-                        addView(text(macro.body.lineSequence().firstOrNull().orEmpty(), 13f, COLOR_DIM))
-                    }.asClickable { openMacroEditor(macro.id) },
-                )
-            }
+            return
+        }
+        body.addView(
+            sectionCard(
+                title = "宏",
+                count = config.macros.size,
+                hint = "点一行编辑；宏在模板脚本之后执行",
+                collapsed = macrosCollapsed,
+                onToggle = { macrosCollapsed = it },
+                items = config.macros.map { macro -> macroItem(config, macro) },
+            ),
+        )
+    }
+
+    /** 宏列表里的一行：名字 + 生效目标 + 首行代码；点整行编辑。 */
+    private fun macroItem(
+        config: SparkConfig,
+        macro: MacroScript,
+    ): View {
+        val targetNames = macroTargetNames(config, macro)
+        return flatRow().apply {
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(macro.name.ifBlank { "(未命名宏)" }, 16f, bold = true))
+                    addView(
+                        text(
+                            if (targetNames.isEmpty()) "未挂到任何模板或会话" else targetNames.joinToString("、"),
+                            13f,
+                            if (targetNames.isEmpty()) COLOR_WARN else COLOR_DIM,
+                        ),
+                    )
+                    addView(text(macro.body.lineSequence().firstOrNull().orEmpty(), 13f, COLOR_DIM))
+                },
+            )
+            isClickable = true
+            setOnClickListener { openMacroEditor(macro.id) }
         }
     }
 
@@ -2086,18 +2231,34 @@ class SparkSettingsActivity : Activity() {
     ) {
         if (config.functions.isEmpty()) {
             body.addView(text("还没有自定义函数", 14f, COLOR_DIM))
-        } else {
-            config.functions.forEach { fn ->
-                body.addView(
-                    card().apply {
-                        addView(text("ctx.functions.${fn.name}(${fn.paramList.joinToString(", ")})", 15f, COLOR_TEXT, bold = true))
-                        if (fn.desc.isNotBlank()) addView(text(fn.desc, 13f, COLOR_DIM))
-                        addView(text(fn.body.lineSequence().take(2).joinToString(" ").trim(), 13f, COLOR_DIM))
-                    }.asClickable { openFunctionEditor(fn.id) },
-                )
-            }
+            return
         }
+        body.addView(
+            sectionCard(
+                title = "函数",
+                count = config.functions.size,
+                hint = "点一行编辑；注入成 ctx.functions.<名字>",
+                collapsed = functionsCollapsed,
+                onToggle = { functionsCollapsed = it },
+                items = config.functions.map { fn -> functionItem(fn) },
+            ),
+        )
     }
+
+    /** 函数列表里的一行：签名 + 说明 + 前两行代码；点整行编辑。 */
+    private fun functionItem(fn: UserFunction): View =
+        flatRow().apply {
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text("ctx.functions.${fn.name}(${fn.paramList.joinToString(", ")})", 15f, COLOR_TEXT, bold = true))
+                    if (fn.desc.isNotBlank()) addView(text(fn.desc, 13f, COLOR_DIM))
+                    addView(text(fn.body.lineSequence().take(2).joinToString(" ").trim(), 13f, COLOR_DIM))
+                },
+            )
+            isClickable = true
+            setOnClickListener { openFunctionEditor(fn.id) }
+        }
 
     /** 宏的生效目标名字（通用模板名 / 会话显示名）。 */
     private fun macroTargetNames(
@@ -2335,7 +2496,7 @@ object SparkPreview {
 
     /** 样例候选：已选目标的单聊排在前面，其它单聊跟在后面。 */
     fun samples(config: SparkConfig): List<ConversationSnapshot> {
-        val singles = config.snapshots.filter { !it.isGroup }
+        val singles = config.snapshots.filter { !it.isGroup && !it.isHidden }
         val selected = singles.filter { config.needsRenewal(it) }
         return selected + singles.filterNot { config.needsRenewal(it) }
     }

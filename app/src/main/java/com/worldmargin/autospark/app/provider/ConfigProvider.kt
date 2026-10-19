@@ -132,7 +132,9 @@ class ConfigProvider : ContentProvider() {
                     Bundle().apply { putBoolean(ConfigContract.KEY_OK, false) }
                 } else {
                     val snapshots = ConfigCodec.decode("""{"snapshots":$json}""").snapshots
-                    ConfigStore.update(context) { config -> config.copy(snapshots = snapshots) }
+                    val now = System.currentTimeMillis()
+                    // 合并而不是整份替换：IM 分批吐会话，一次扫描只更新扫到的，没扫到的先留着
+                    ConfigStore.update(context) { config -> config.mergeSnapshots(snapshots, now) }
                     Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
                 }
             }

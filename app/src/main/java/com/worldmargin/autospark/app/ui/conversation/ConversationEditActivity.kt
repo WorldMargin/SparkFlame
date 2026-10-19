@@ -393,7 +393,6 @@ class ConversationEditActivity : Activity() {
         actionRow {
             addView(iconButton(UiKit.Icons.PREVIEW, "", compact = true, hint = "预览") { showPreview() })
             addView(pasteButton(editor))
-            addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
             addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
             addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
             // 这个会话自己的变量（同名会覆盖父模板的）：变量页

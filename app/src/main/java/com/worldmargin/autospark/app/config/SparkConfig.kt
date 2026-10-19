@@ -158,8 +158,13 @@ data class ConversationSnapshot(
     val needsRenewal: Boolean,
     val isGroup: Boolean,
     val updatedAt: Long,
+    /** 连续多少次扫描没再出现（出现一次就清零），见 [SparkConfig.HIDDEN_AFTER_MISSES]。 */
+    val missCount: Int = 0,
 ) {
     val displayName: String get() = remark.ifBlank { name }
+
+    /** 连续 [SparkConfig.HIDDEN_AFTER_MISSES] 次没出现：从会话列表里隐藏，但数据还留着。 */
+    val isHidden: Boolean get() = missCount >= SparkConfig.HIDDEN_AFTER_MISSES
 }
 
 /** 全量配置：模板 + 发送记录 + 会话快照 + 手动归属。 */
@@ -217,6 +222,50 @@ data class SparkConfig(
             in forcedSkip -> false
             else -> snapshot.hasSpark && snapshot.needsRenewal
         }
+
+    /**
+     * 合并一次会话扫描结果，而不是整份替换。
+     *
+     * 抖音冷启动后 IM 是**分批**吐会话的（先 0 条，再几条、几十条），一次扫描代表不了完整列表；
+     * 直接替换会把还没加载出来的会话从界面里抹掉。所以扫到的用新数据、
+     * 没扫到的先原样留着并累加 [ConversationSnapshot.missCount]：
+     * 连续 [HIDDEN_AFTER_MISSES] 次没出现就从列表里隐藏，
+     * 连续 [SNAPSHOT_GRACE_MS] 没出现（按最后一次出现算）才整条删除。
+     */
+    fun mergeSnapshots(
+        fresh: List<ConversationSnapshot>,
+        now: Long,
+    ): SparkConfig {
+        val previous = snapshots.associateBy { it.conversationId }
+        val merged =
+            fresh.map { item ->
+                val old = previous[item.conversationId] ?: return@map item
+                // 昵称/备注/头像是按对方 uid 现查的，冷启动时可能还没查到；空值不覆盖已有内容
+                item.copy(
+                    name = item.name.ifBlank { old.name },
+                    remark = item.remark.ifBlank { old.remark },
+                    avatar = item.avatar.ifBlank { old.avatar },
+                    peerUid = item.peerUid.ifBlank { old.peerUid },
+                )
+            }
+        val seen = fresh.map { it.conversationId }.toSet()
+        val kept = mutableListOf<ConversationSnapshot>()
+        val expired = mutableSetOf<String>()
+        snapshots.forEach { old ->
+            if (old.conversationId in seen) return@forEach
+            if (now - old.updatedAt > SNAPSHOT_GRACE_MS) {
+                expired += old.conversationId
+            } else {
+                kept += old.copy(missCount = old.missCount + 1)
+            }
+        }
+        // 快照删除后，手动归属里指向它的 id 一起清掉（否则「已选目标」会永远多一个幽灵）
+        return copy(
+            snapshots = merged + kept,
+            forcedRenew = forcedRenew - expired,
+            forcedSkip = forcedSkip - expired,
+        )
+    }
 
     /**
      * 解析某个会话最终生效的模板变量：**父模板的变量在前、会话自己的在后**，同名覆盖。
@@ -363,9 +412,9 @@ data class SparkConfig(
                 "$declaration\nctx.functions.${fn.name} = ${fn.name};"
             }
 
-    /** 当前在「已选目标」里的会话（单聊、按判定或手动归属）。 */
+    /** 当前在「已选目标」里的会话（单聊、按判定或手动归属；已隐藏的不算）。 */
     fun selectedIds(): Set<String> =
-        snapshots.filter { !it.isGroup && needsRenewal(it) }.map { it.conversationId }.toSet()
+        snapshots.filter { !it.isGroup && !it.isHidden && needsRenewal(it) }.map { it.conversationId }.toSet()
 
     /**
      * 数据保留策略（用户确认过的口径）：
@@ -411,6 +460,12 @@ data class SparkConfig(
         /** 移出「已选目标」后，模板与发送记录的保留时长。 */
         const val TEMPLATE_GRACE_MS = 30L * 24 * 60 * 60 * 1000
 
+        /** 会话快照超过这么久没再被扫描到，才当作已删除（见 [mergeSnapshots]）。 */
+        const val SNAPSHOT_GRACE_MS = 30L * 24 * 60 * 60 * 1000
+
+        /** 连续这么多次扫描没出现，会话就从列表里隐藏（数据保留到 [SNAPSHOT_GRACE_MS]）。 */
+        const val HIDDEN_AFTER_MISSES = 3
+
         /** 内置模板作为继承来源时的 id 前缀（内置模板不在 groups 里，用前缀区分）。 */
         const val BUILTIN_PREFIX = "builtin:"
 
@@ -443,9 +498,11 @@ data class SparkConfig(
             return merged.values.toList()
         }
 
-        /** 宏执行前把结果变量归一成列表（模板里若写成字符串赋值，这里包成单元素列表）。 */
-        private const val RESULT_NORMALIZE =
-            "if (typeof \$spark_result\$ === 'string') { \$spark_result\$ = [\$spark_result\$]; }"
+        /**
+         * 宏执行前把「结果列表」的两个引用同步一次
+         *（`$spark_result$` 与新写法 `ctx.result` 是同一个数组；脚本可能把其中一个换成了字符串 / 新数组）。
+         */
+        private const val RESULT_NORMALIZE = "__sparkSyncResult();"
     }
 }
 
@@ -716,7 +773,8 @@ object ConfigCodec {
                     .put("hasSpark", snapshot.hasSpark)
                     .put("needsRenewal", snapshot.needsRenewal)
                     .put("isGroup", snapshot.isGroup)
-                    .put("updatedAt", snapshot.updatedAt),
+                    .put("updatedAt", snapshot.updatedAt)
+                    .put("missCount", snapshot.missCount),
             )
         }
         return array
@@ -866,6 +924,7 @@ object ConfigCodec {
                         needsRenewal = item.optBoolean("needsRenewal"),
                         isGroup = item.optBoolean("isGroup"),
                         updatedAt = item.optLong("updatedAt"),
+                        missCount = item.optInt("missCount"),
                     )
             }
         }

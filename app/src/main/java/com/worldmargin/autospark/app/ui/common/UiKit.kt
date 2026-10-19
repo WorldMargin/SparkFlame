@@ -307,8 +307,8 @@ object UiKit {
     /**
      * 编辑器动作条里的「粘贴」按钮。
      *
-     * 编辑器里长按的原生选择菜单被关掉了（免得和 Monaco 自己的选区打架），
-     * 所以从 AI / 网页复制脚本来粘贴要走这个入口：读剪贴板 → 插到光标处。
+     * 长按走系统的原生选区与菜单；这个按钮是快捷入口：读剪贴板 → 插到光标处，
+     * 省得在 WebView 里长按再点「粘贴」。
      */
     fun Context.pasteButton(editor: SparkEditor?): View =
         iconButton(Icons.CLIPPY, "", compact = true, hint = "粘贴") {

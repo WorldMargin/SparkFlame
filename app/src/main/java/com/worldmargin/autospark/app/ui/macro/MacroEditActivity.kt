@@ -98,7 +98,7 @@ class MacroEditActivity : Activity() {
             },
         )
 
-        root.addView(text("宏脚本（在模板脚本之后执行，可改写 " + "\$spark_result\$" + "）", 13f, COLOR_DIM))
+        root.addView(text("宏脚本（在模板脚本之后执行，可改写 ctx.result）", 13f, COLOR_DIM))
         editor =
             SparkEditors.create(this, config).apply {
                 setText(macro?.body ?: "")
@@ -114,7 +114,6 @@ class MacroEditActivity : Activity() {
                 addView(iconButton(UiKit.Icons.TARGET, "", compact = true, hint = "选目标") { pickTargets() })
 
                 addView(pasteButton(editor))
-                addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
                 addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
                     addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDelete() })
@@ -156,7 +155,7 @@ class MacroEditActivity : Activity() {
     private fun pickTargets() {
         val config = ConfigStore.load(this)
         val groups = config.groups
-        val snapshots = config.snapshots.filter { !it.isGroup }
+        val snapshots = config.snapshots.filter { !it.isGroup && !it.isHidden }
         val labels =
             groups.map { "模板：" + it.name.ifBlank { "(未命名)" } } +
                 snapshots.map { "会话：" + it.displayName.ifBlank { "(无名)" } }

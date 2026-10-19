@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
@@ -13,14 +14,14 @@ import com.worldmargin.autospark.app.config.SandboxVar
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_ACCENT
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_BG
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_DIM
-import com.worldmargin.autospark.app.ui.common.UiKit.card
 import com.worldmargin.autospark.app.ui.common.UiKit.column
 import com.worldmargin.autospark.app.ui.common.UiKit.divider
 import com.worldmargin.autospark.app.ui.common.UiKit.dp
+import com.worldmargin.autospark.app.ui.common.UiKit.flatRow
 import com.worldmargin.autospark.app.ui.common.UiKit.iconButton
 import com.worldmargin.autospark.app.ui.common.UiKit.padSystemBars
-import com.worldmargin.autospark.app.ui.common.UiKit.row
 import com.worldmargin.autospark.app.ui.common.UiKit.scroll
+import com.worldmargin.autospark.app.ui.common.UiKit.sectionCard
 import com.worldmargin.autospark.app.ui.common.UiKit.text
 import com.worldmargin.autospark.app.ui.common.UiKit.titleBar
 import com.worldmargin.autospark.app.config.ConfigStore
@@ -36,6 +37,9 @@ class SandboxVarsActivity : Activity() {
     private lateinit var listView: LinearLayout
     private val rows = mutableListOf<Pair<EditText, EditText>>()
     private var owner: String = ""
+
+    /** 「变量」卡片的折叠状态。 */
+    private var collapsed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,12 +60,10 @@ class SandboxVarsActivity : Activity() {
                                 isClickable = true
                                 setOnClickListener {
                                     rows += newRow("", "")
+                                    collapsed = false
                                     render()
                                 }
                             },
-                        )
-                        addView(
-                            text("\u503c\u662f JSON\uff1a\"\u6587\u672c\" / 12 / true / {\"a\":1} / [1,2]", 12f, COLOR_DIM),
                         )
                     },
                 )
@@ -104,33 +106,48 @@ class SandboxVarsActivity : Activity() {
 
     private fun render() {
         listView.removeAllViews()
-        rows.forEachIndexed { index, pair ->
-            val host =
-                row().apply {
-                    addView(pair.first, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.34f))
-                    addView(
-                        pair.second,
-                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.66f).apply {
-                            setPadding(dp(8), 0, dp(8), 0)
-                        },
-                    )
-                    addView(
-                        iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "\u5220\u9664") {
-                            if (index in rows.indices) {
-                                rows.removeAt(index)
-                                render()
-                            }
-                        },
-                    )
-                }
-            listView.addView(
-                card().apply {
-                    setPadding(dp(12), dp(10), dp(12), dp(10))
-                    addView(host)
+        if (rows.isEmpty()) {
+            listView.addView(text("\u8fd8\u6ca1\u6709\u53d8\u91cf", 13f, COLOR_DIM))
+            return
+        }
+        listView.addView(
+            sectionCard(
+                title = "\u53d8\u91cf",
+                count = rows.size,
+                hint = "\u503c\u662f JSON\uff1a\"\u6587\u672c\" / 12 / true / {\"a\":1} / [1,2]",
+                collapsed = collapsed,
+                onToggle = { collapsed = it },
+                items = rows.mapIndexed { index, pair -> rowItem(index, pair) },
+            ),
+        )
+    }
+
+    /** 一行键值对：名字 / JSON 值 / 删除，放进可折叠卡片里。 */
+    private fun rowItem(
+        index: Int,
+        pair: Pair<EditText, EditText>,
+    ): View {
+        // 输入框是复用的：先把它从上一轮的父容器里摘出来，否则 addView 会报「已有父容器」
+        listOf(pair.first, pair.second).forEach { field ->
+            (field.parent as? ViewGroup)?.removeView(field)
+        }
+        return flatRow().apply {
+            addView(pair.first, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.34f))
+            addView(
+                pair.second,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.66f).apply {
+                    setPadding(dp(8), 0, dp(8), 0)
+                },
+            )
+            addView(
+                iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "\u5220\u9664") {
+                    if (index in rows.indices) {
+                        rows.removeAt(index)
+                        render()
+                    }
                 },
             )
         }
-        if (rows.isEmpty()) listView.addView(text("\u8fd8\u6ca1\u6709\u53d8\u91cf", 13f, COLOR_DIM))
     }
 
     private fun saveAction(): View = iconButton(UiKit.Icons.CHECK, "\u4fdd\u5b58", primary = true, compact = true) { save() }

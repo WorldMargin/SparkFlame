@@ -82,7 +82,7 @@ class TemplateEditActivity : Activity() {
 
         root.addView(variablesRow(group?.variables ?: emptyList()))
 
-        root.addView(text("文案脚本（把要发送的文案赋给 " + SparkScriptEngine.RESULT_VAR + "）", 13f, UiKit.COLOR_DIM))
+        root.addView(text("文案脚本（把要发送的文案 push 进 ctx.result）", 13f, UiKit.COLOR_DIM))
 
         editor =
             SparkEditors.create(this, config).apply {
@@ -101,7 +101,6 @@ class TemplateEditActivity : Activity() {
                 addView(iconButton(UiKit.Icons.PREVIEW, "", primary = true, compact = true, hint = "预览") { showPreview() })
 
                 addView(pasteButton(editor))
-                addView(iconButton(UiKit.Icons.LIGHTBULB, "", compact = true, hint = "补全") { editor.showCompletion() })
                 addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
                     addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
@@ -349,7 +348,7 @@ class TemplateEditActivity : Activity() {
     private fun pickMembers() {
         val id = groupId ?: return
         val config = ConfigStore.load(this)
-        val snapshots = config.snapshots.filter { !it.isGroup }
+        val snapshots = config.snapshots.filter { !it.isGroup && !it.isHidden }
         if (snapshots.isEmpty()) {
             Toast.makeText(this, "暂无会话快照，请先在主页刷新会话", Toast.LENGTH_SHORT).show()
             return

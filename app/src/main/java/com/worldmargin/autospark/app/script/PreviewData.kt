@@ -35,6 +35,14 @@ object PreviewData {
             parentId = own?.inheritFrom.orEmpty()
             val selected = conversationId in selectedIds
             val sentToday = config.sentDays[conversationId] == today
+            val isGroup = snapshot?.isGroup ?: false
+            val forced = conversationId in config.forcedRenew
+            val autoCandidate =
+                when {
+                    conversationId in config.forcedSkip -> false
+                    isGroup -> forced
+                    else -> forced || selected
+                }
             conversations.put(
                 JSONObject()
                     .put("id", conversationId)
@@ -43,10 +51,12 @@ object PreviewData {
                     .put("days", snapshot?.days ?: 0)
                     .put("state", snapshot?.state ?: -1)
                     .put("stateText", snapshot?.stateText.orEmpty())
-                    .put("isGroup", snapshot?.isGroup ?: false)
+                    .put("isGroup", isGroup)
                     .put("selected", selected)
                     .put("sentToday", sentToday)
                     // 预览的「本轮」里只有它自己，所以它就是本轮要发的那个
+                    .put("manualSend", true)
+                    .put("autoSend", autoCandidate && !sentToday)
                     .put("willSend", true),
             )
             templateName = config.conversationLabel(conversationId)

@@ -14,11 +14,13 @@ import com.worldmargin.autospark.app.config.ConversationSnapshot
 import com.worldmargin.autospark.app.config.SparkConfig
 import com.worldmargin.autospark.app.config.ConfigClient
 import com.worldmargin.autospark.app.provider.ConfigContract
+import com.worldmargin.autospark.app.script.EmptyResultException
 import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.host.im.ImBridge
 import com.worldmargin.autospark.host.im.ImMsgBridge
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.javascript.Function
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -100,7 +102,7 @@ object AutoSparkBridge {
             mountTargets = mountTargetsJson(config, conversationId),
             templateInfo = templateInfoJson(config, conversationId),
             macroNames = macroNamesJson(config),
-            info = infoJson(config, conversations),
+            info = infoJson(config, conversations, only, ignoreSentToday),
             preview = false,
         )
 
@@ -109,6 +111,46 @@ object AutoSparkBridge {
         val names = JSONObject()
         config.macros.forEach { macro -> names.put(macro.id, macro.name) }
         return names.toString()
+    }
+
+    /** 一个会话在本轮里的三种发送口径（供脚本筛选）。 */
+    private class SendFlags(
+        /** 自动一轮会不会发它（按抖音判定 / 手动归属，且今天还没发）。 */
+        val auto: Boolean,
+        /** 手动一轮会不会发它（点名时只看点名，否则按候选；手动不受「今日已发」限制）。 */
+        val manual: Boolean,
+        /** 本轮实际会不会发（当前是哪种轮次就按哪种口径）。 */
+        val will: Boolean,
+    )
+
+    /**
+     * 算出会话的三种发送口径。
+     *
+     * [only] 非空 = 手动点名发送；[ignoreSentToday] = 这一轮不看「今日已发」（手动发送就是）。
+     * 自动轮的口径和 [runRenew] 的候选筛选保持一致：群聊只有手动移进「已选目标」才发、
+     * 强制移出的不发、其余看抖音的 needsRenewal。
+     */
+    private fun sendFlags(
+        config: SparkConfig,
+        id: String,
+        isGroup: Boolean,
+        spark: JSONObject?,
+        sentToday: Boolean,
+        only: Set<String>,
+        ignoreSentToday: Boolean,
+    ): SendFlags {
+        val forced = id in config.forcedRenew
+        val candidate =
+            when {
+                id in config.forcedSkip -> false
+                isGroup -> forced
+                else -> forced || (spark?.optBoolean("hasSpark") == true && spark.optBoolean("needsRenewal"))
+            }
+        val auto = candidate && !sentToday
+        val manual = if (only.isNotEmpty()) id in only else candidate
+        val manualRound = only.isNotEmpty() || ignoreSentToday
+        val will = if (manualRound) manual && (ignoreSentToday || !sentToday) else auto
+        return SendFlags(auto, manual, will)
     }
 
     /** `ctx.system.getAllConversation()` 的返回值（字段少而稳定，不把原始负载带进脚本）。 */
@@ -128,6 +170,7 @@ object AutoSparkBridge {
             val isGroup = item.optBoolean("isGroup")
             val selected = id in selectedIds
             val sentToday = config.sentDays[id] == today
+            val flags = sendFlags(config, id, isGroup, spark, sentToday, only, ignoreSentToday)
             array.put(
                 JSONObject()
                     .put("id", id)
@@ -139,14 +182,9 @@ object AutoSparkBridge {
                     .put("isGroup", isGroup)
                     .put("selected", selected)
                     .put("sentToday", sentToday)
-                    .put(
-                        "willSend",
-                        when {
-                            id in only -> true
-                            ignoreSentToday -> true
-                            else -> selected && !sentToday && !isGroup
-                        },
-                    ),
+                    .put("manualSend", flags.manual)
+                    .put("autoSend", flags.auto)
+                    .put("willSend", flags.will),
             )
         }
         return array.toString()
@@ -170,13 +208,20 @@ object AutoSparkBridge {
     private fun infoJson(
         config: SparkConfig,
         conversations: org.json.JSONArray,
+        only: Set<String> = emptySet(),
+        ignoreSentToday: Boolean = false,
     ): String {
         val convs = JSONObject()
+        val today = dayFormat.format(Date())
+        val selectedIds = config.selectedIds()
         for (index in 0 until conversations.length()) {
             val item = conversations.optJSONObject(index) ?: continue
             val id = item.optString("conversationId")
             if (id.isEmpty()) continue
             val spark = item.optJSONObject("spark")
+            val isGroup = item.optBoolean("isGroup")
+            val sentToday = config.sentDays[id] == today
+            val flags = sendFlags(config, id, isGroup, spark, sentToday, only, ignoreSentToday)
             val own = config.conversation(id)
             val parentId = own?.inheritFrom.orEmpty()
             val parentGroup = config.group(parentId)
@@ -200,6 +245,11 @@ object AutoSparkBridge {
                     .put("state", spark?.optInt("state", -1) ?: -1)
                     .put("stateText", spark?.optString("stateText") ?: "")
                     .put("isGroup", item.optBoolean("isGroup"))
+                    .put("selected", id in selectedIds)
+                    .put("sentToday", sentToday)
+                    .put("manualSend", flags.manual)
+                    .put("autoSend", flags.auto)
+                    .put("willSend", flags.will)
                     .put("template", JSONObject().put("id", id).put("name", config.conversationLabel(id)).put("body", own?.body.orEmpty()))
                     .put(
                         "parent",
@@ -344,11 +394,42 @@ object AutoSparkBridge {
         }
     }
 
-    /** 把当前会话列表写入快照（供管理界面展示）。 */
+    /**
+     * 触发脚本注册的会话结果回调，并把回调里改的沙盒 / 宏挂载并进这一轮统一落盘。
+     *
+     * @param result [SparkScriptEngine.SEND_SUCCEED] / [SparkScriptEngine.SEND_SKIPPED] / [SparkScriptEngine.SEND_FAILED]
+     * @param reason 具体原因（成功时为空串）
+     */
+    private fun fireResultCallbacks(
+        callbacks: List<Function>,
+        conversationId: String,
+        result: String,
+        reason: String,
+        pendingSandbox: MutableList<SandboxVar>,
+        pendingSandboxDeletes: MutableList<Pair<String, String>>,
+        macroOps: MutableList<SparkScriptEngine.MacroOp>,
+    ) {
+        if (callbacks.isEmpty()) return
+        val extra =
+            runCatching { SparkScriptEngine.notifySendResult(callbacks, conversationId, result, reason) }
+                .getOrNull() ?: return
+        pendingSandbox.addAll(extra.sandboxWrites)
+        pendingSandboxDeletes.addAll(extra.sandboxDeletes.map { it.owner to it.key })
+        macroOps += extra.macroOps.map { op -> if (op.targetId.isBlank()) op.copy(targetId = conversationId) else op }
+    }
+
+    /**
+     * 把当前会话列表写入快照（供管理界面展示）。
+     *
+     * 空扫描结果不写：冷启动时 IM 还没加载完会先给空列表，此时写入没有意义，
+     * 也让调用方的重试（[pushSnapshotToModule]、[scheduleOnAppStart]）继续等。
+     * 非空结果由 App 侧 [SparkConfig.mergeSnapshots] 合并进已有快照
+     * （IM 是分批吐会话的，一次扫描不能代表完整列表）。
+     */
     fun refreshSnapshot(context: Context): RefreshOutcome {
         val fetched = fetchConversations()
         val conversations = fetched.conversations ?: return RefreshOutcome(false, fetched.error)
-        traceConversations(context, fetched)
+        if (conversations.length() == 0) return RefreshOutcome(false, "IM 会话列表为空（还没加载完）")
         val now = System.currentTimeMillis()
         val snapshots = mutableListOf<ConversationSnapshot>()
         for (index in 0 until conversations.length()) {
@@ -372,6 +453,7 @@ object AutoSparkBridge {
                     updatedAt = now,
                 )
         }
+        traceConversations(context, fetched)
         val written = ConfigClient.putSnapshots(context, snapshots)
         if (!written) return RefreshOutcome(false, "快照写入配置失败（跨进程通道不可用）")
         // 快照落盘后按保留策略清理：不在已选目标里的会话，模板与发送记录按 30 天宽限期清掉
@@ -728,6 +810,8 @@ object AutoSparkBridge {
         if (AccountBridge.getCurrentUserId().isNullOrBlank()) return error("未登录")
 
         val conversations = loadConversations() ?: return error("会话列表获取失败（IM 未初始化或链路变动）")
+        // 空列表是 IM 还没加载完，不等于「今天没有要续的」：当成成功会让当天不再重试
+        if (conversations.length() == 0) return error("会话列表还没加载完（0 条），稍后再试")
         val today = dayFormat.format(Date())
 
         val sent = JSONArray()
@@ -822,10 +906,22 @@ object AutoSparkBridge {
                     )
                 }
                     .getOrElse { error ->
-                        failed.put(
-                            JSONObject().put("conversationId", conversationId).put("name", name)
-                                .put("error", error.message ?: error.toString()),
-                        )
+                        if (error is EmptyResultException) {
+                            // 空结果 = 这条不发（跳过，不算失败），但还是把 Skipped 回给脚本注册的回调
+                            skipped.put(
+                                JSONObject().put("conversationId", conversationId).put("name", name)
+                                    .put("reason", "没有内容"),
+                            )
+                            fireResultCallbacks(
+                                error.callbacks, conversationId, SparkScriptEngine.SEND_SKIPPED, "没有内容",
+                                pendingSandbox, pendingSandboxDeletes, macroOps,
+                            )
+                        } else {
+                            failed.put(
+                                JSONObject().put("conversationId", conversationId).put("name", name)
+                                    .put("error", error.message ?: error.toString()),
+                            )
+                        }
                         continue
                     }
             pendingSandbox.addAll(rendered.sandboxWrites)
@@ -836,7 +932,18 @@ object AutoSparkBridge {
             val text = rendered.text
 
             val outcome = runCatching { JSONObject(ImMsgBridge.sendTextJson(conversationId, text, 0L, "")) }.getOrNull()
-            if (outcome != null && outcome.optBoolean("ok")) {
+            val success = outcome != null && outcome.optBoolean("ok")
+            val reason = if (success) "" else (outcome?.optString("error")?.takeIf { it.isNotBlank() } ?: "发送失败")
+            fireResultCallbacks(
+                rendered.callbacks,
+                conversationId,
+                if (success) SparkScriptEngine.SEND_SUCCEED else SparkScriptEngine.SEND_FAILED,
+                reason,
+                pendingSandbox,
+                pendingSandboxDeletes,
+                macroOps,
+            )
+            if (success) {
                 ConfigClient.markSent(context, conversationId, today)
                 sent.put(
                     JSONObject().put("conversationId", conversationId).put("name", name)

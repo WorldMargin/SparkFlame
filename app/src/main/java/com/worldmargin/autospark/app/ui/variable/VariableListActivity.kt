@@ -406,7 +406,7 @@ class VariableListActivity : Activity() {
         val pushes =
             buildString {
                 vars.forEach { variable ->
-                    append(SparkScriptEngine.RESULT_VAR)
+                    append("ctx.result")
                     append(".push(")
                     append(JSONObject.quote(variable.name + " = "))
                     append(" + String(ctx.template.vars[")

@@ -80,6 +80,7 @@ object UiKit {
         const val SAVE = "\ueb4b"
         const val NEW_FILE = "\uea7f"
         const val NOTE = "\ueb26"
+        const val TAG = "\uea66"
         const val INSERT = "\uec11"
         const val BOOK = "\ueaa4"
         const val SERVER = "\ueba2"

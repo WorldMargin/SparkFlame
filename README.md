@@ -54,7 +54,8 @@
 - **脚本上下文**（按来源分命名空间）：
   - `ctx.result`：要发的文案列表（`$spark_result$` 是同一数组，老脚本兼容）
   - `ctx.builtin`：日期时间 + 内置函数；`ctx.io`：抖音给的会话数据；`ctx.template.vars`：模板 / 会话变量
-  - `ctx.system`：`getAllConversation(filter?)`（按字段 / 函数筛选）、`getConversation/getTemplate/getMacro(id)`、
+  - `ctx.system`：`getAllConversation(filter?)`（按字段 / 函数筛选，标签用 `tags.include` / `tags.except`，内层交集、外层并集）、
+    `getConversation/getTemplate/getMacro(id)`、
     `mountMacro / unmountMacro / unmountAll`
   - `ctx.registerCallback(fn)`：会话处理结束后回调 `{ conversationId, result: "Succeed"|"Skipped"|"Failed", reason? }`
   - `ctx.macro`：宏自己的变量；`ctx.functions`：自定义函数；都有类型声明与补全
@@ -62,6 +63,13 @@
 - **编辑器**：**CodeMirror 6**（离线内置）—— 输入时自动补全 `ctx.*` 与 JS 内置成员（类型推断、悬浮文档）；
   **粘贴 / 格式化**（清理零宽字符、智能引号、代码围栏并重排缩进）；用真实会话快照**预览**；
   长按走系统原生选区，动作条是图标（长按看名称）
+- **标签**：给会话打多个标签（家人 / 同事 / 待续……），只用于整理和筛选，不参与发送
+  - 底部「标签」页：新增 / 改名 / 换色 / 删除（删除会从所有会话上摘掉）
+  - **归属在标签页管**：点标签卡片 → 会话选择页，勾选这个标签包含哪些会话（确定即替换）
+  - 单个会话也能选：会话编辑页顶部直接点标签小药丸开 / 关（不用弹窗）
+  - 列表与选择页都有「标签 / 来源」两排标记：标签可多选（并集，选中项背景变色），来源单选；
+    按标签筛选时命中越多越靠前；行内色块与 `继承：X` 也能直接点
+  - **会话选择页**（选会话继承 / 克隆到会话）独立成页：按昵称 / 备注搜索，按标签（多选）或来源筛选，多选后确定
 - **快照与生命周期**：打开抖音、跨天补跑、手动发送之后都会把会话快照写回 App；
   连续 3 次没出现的会话收进「被隐藏」折叠卡片，满 30 天连快照一起删除
 - **配置按项导出 / 导入**：勾模板自动带上父模板、宏、用到的函数；导入是合并，没勾的部分不动

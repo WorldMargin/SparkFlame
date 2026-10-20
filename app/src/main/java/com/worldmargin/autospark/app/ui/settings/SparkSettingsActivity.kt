@@ -10,8 +10,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Switch
@@ -24,6 +26,7 @@ import com.worldmargin.autospark.app.config.ConfigCodec
 import com.worldmargin.autospark.app.config.ConversationTemplate
 import com.worldmargin.autospark.app.config.MacroScript
 import com.worldmargin.autospark.app.config.SparkConfig
+import com.worldmargin.autospark.app.config.SparkTag
 import com.worldmargin.autospark.app.config.TransferSelection
 import com.worldmargin.autospark.app.config.fullSelection
 import com.worldmargin.autospark.app.config.mergeFrom
@@ -81,6 +84,7 @@ import com.worldmargin.autospark.app.config.TemplateVar
 import com.worldmargin.autospark.app.script.TemplateVarPrelude
 import com.worldmargin.autospark.app.ui.common.AvatarLoader
 import com.worldmargin.autospark.app.ui.conversation.ConversationEditActivity
+import com.worldmargin.autospark.app.ui.conversation.ConversationPickerActivity
 import com.worldmargin.autospark.app.ui.function.FunctionEditActivity
 import com.worldmargin.autospark.app.ui.macro.MacroEditActivity
 import com.worldmargin.autospark.app.ui.template.TemplateEditActivity
@@ -90,7 +94,7 @@ import com.worldmargin.autospark.app.ui.common.UiKit
 /**
  * 续火花管理主界面（运行在模块进程）。
  *
- * 底部四个标签：续火花 / 模板 / 宏/函数 / 设置；
+ * 底部五个标签：续火花 / 模板 / 标签 / 宏/函数 / 设置；
  * 「续火花」标签内再分「已选目标」（会续火花）/「未选目标」两页。
  */
 class SparkSettingsActivity : Activity() {
@@ -132,6 +136,15 @@ class SparkSettingsActivity : Activity() {
     /** 同上，要写回哪个会话自己的变量。 */
     private var pendingVarsConversation: String? = null
 
+    /** 会话选择页回来后要写的模板（继承 / 克隆用）。 */
+    private var pendingPickTemplateId: String? = null
+    private var pendingPickTemplateName = ""
+    private var pendingCloneName = ""
+    private var pendingCloneBody = ""
+
+    /** 标签页：正在为哪个标签选择会话。 */
+    private var pendingTagId: String? = null
+
     /** 导出页勾选的条目；[exportExcluded] 记录用户手动取消过的（依赖自动勾选不再加回来）。 */
     private var exportSelection = TransferSelection()
     private var exportExcluded = emptySet<String>()
@@ -149,13 +162,13 @@ class SparkSettingsActivity : Activity() {
     /** 「续火花」页的搜索关键字（重建页面后恢复用）。 */
     private var sparkQuery = ""
 
+    /** 续火花页的标记筛选：标签可多选（并集），来源单选（null = 不筛；来源用 [SRC_NONE] 表示「未写文案」）。 */
+    private val sparkTagFilter = linkedSetOf<String>()
+    private var sparkSourceFilter: String? = null
+
     /** 模板页 / 宏函数页的搜索关键字。 */
     private var templateQuery = ""
     private var macroQuery = ""
-
-    /** 宏 / 函数列表的折叠状态（列表可能很长，默认展开）。 */
-    private var macrosCollapsed = false
-    private var functionsCollapsed = false
 
     /** 「续火花」页两个分组卡片的折叠状态。 */
     private var singlesCollapsed = false
@@ -180,7 +193,7 @@ class SparkSettingsActivity : Activity() {
     private var selectionCount: TextView? = null
 
     /** 勾选行的底色（淡蓝，和卡片底色区分得开又不刺眼）。 */
-    private val COLOR_SELECTED = 0x223B7CFF
+    private val COLOR_SELECTED = 0x333B7CFF
 
     /** 顶部「发送…」按钮的文字：勾选数一变化就要跟着改，不能等重建页面。 */
     private var sendLabel: TextView? = null
@@ -216,8 +229,20 @@ class SparkSettingsActivity : Activity() {
             }
         }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        val requested = intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
+        if (requested in TAB_SPARK..TAB_SETTINGS) {
+            tab = requested
+            subPage = null
+            selected.clear()
+        }
+        render()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        tab = intent.getIntExtra(EXTRA_TAB, TAB_SPARK).coerceIn(TAB_SPARK, TAB_SETTINGS)
         pageHost = column()
         navHost = column()
         headerHost = column()
@@ -298,6 +323,18 @@ class SparkSettingsActivity : Activity() {
             }
             Toast.makeText(this, "已保存 ${vars.size} 个变量", Toast.LENGTH_SHORT).show()
             render()
+            return
+        }
+        if (requestCode == REQUEST_PICK_MEMBERS) {
+            if (resultCode == RESULT_OK) applyPickedMembers(data)
+            return
+        }
+        if (requestCode == REQUEST_PICK_CLONE) {
+            if (resultCode == RESULT_OK) applyClone(data)
+            return
+        }
+        if (requestCode == REQUEST_TAG_MEMBERS) {
+            if (resultCode == RESULT_OK) applyTagMembership(data)
             return
         }
         if (resultCode != RESULT_OK) return
@@ -496,6 +533,7 @@ class SparkSettingsActivity : Activity() {
                 when (tab) {
                     TAB_SPARK -> buildSparkPage(config)
                     TAB_TEMPLATE -> buildTemplatesPage(config)
+                    TAB_TAG -> buildTagPage(config)
                     TAB_FUNCTIONS -> buildFunctionsPage(config)
                     else -> buildSettingsPage(config)
                 }
@@ -728,6 +766,8 @@ class SparkSettingsActivity : Activity() {
         // 连续多次没在抖音出现的会话（isHidden）不进列表，统一收进下方「被隐藏」折叠卡片
         val conversations = config.snapshots.filter { !it.isHidden }
         val hidden = config.snapshots.filter { it.isHidden }
+        // 标签被删掉后，筛选状态跟着失效，避免列表被一个不存在的标签筛成空
+        sparkTagFilter.removeAll { id -> config.tag(id) == null }
         val renewal = conversations.filter { config.needsRenewal(it) }
         val idle = conversations.filterNot { config.needsRenewal(it) }
         val page = column().apply { setPadding(dp(16), 0, dp(16), dp(8)) }
@@ -801,8 +841,17 @@ class SparkSettingsActivity : Activity() {
                 )
             } else {
                 // 分组卡片：单聊一组、群聊一组（标题 + 分隔线 + 条目）；下面挂搜索，按关键字过滤
-                val singles = current.filterNot { it.isGroup }
-                val groups = current.filter { it.isGroup }
+                // 按标签筛选时：命中的所选标签越多越靠前（并集筛选下的相关性排序），同分保持原顺序
+                fun matchedTags(snapshot: ConversationSnapshot): Int =
+                    if (sparkTagFilter.isEmpty()) 0 else config.tagsOf(snapshot.conversationId).count { it.id in sparkTagFilter }
+                val singles =
+                    current.filterNot { it.isGroup }.let { rows ->
+                        if (sparkTagFilter.isEmpty()) rows else rows.sortedByDescending { matchedTags(it) }
+                    }
+                val groups =
+                    current.filter { it.isGroup }.let { rows ->
+                        if (sparkTagFilter.isEmpty()) rows else rows.sortedByDescending { matchedTags(it) }
+                    }
                 val filterables = mutableListOf<Pair<View, List<Pair<View, String>>>>()
                 val singleRows = singles.map { it to buildConversationRow(config, it) }
                 val groupRows = groups.map { it to buildConversationRow(config, it) }
@@ -825,8 +874,45 @@ class SparkSettingsActivity : Activity() {
                     )
                 filterables += singlesCard to singleRows.map { (snap, view) -> view to searchTextOf(snap) }
                 filterables += groupsCard to groupRows.map { (snap, view) -> view to searchTextOf(snap) }
-                list.addView(searchRow("搜索昵称 / 备注", sparkQuery) { applyQuery(it, filterables) })
-                if (sparkQuery.isNotEmpty()) filterGroups(sparkQuery, filterables)
+                val viewToId = rowViews.entries.associate { (id, view) -> view to id }
+                list.addView(searchRow("搜索昵称 / 备注", sparkQuery) { query ->
+                    sparkQuery = query
+                    applySparkFilter(query, filterables, viewToId)
+                })
+                if (config.tags.isNotEmpty()) {
+                    list.addView(
+                        row().apply {
+                            setPadding(0, dp(6), 0, 0)
+                            addView(text("标签", 11f, COLOR_DIM).apply { setPadding(0, 0, dp(6), 0) })
+                            addView(
+                                android.widget.HorizontalScrollView(this@SparkSettingsActivity).apply {
+                                    isHorizontalScrollBarEnabled = false
+                                    addView(buildTagFilterChips(config))
+                                },
+                            )
+                        },
+                    )
+                }
+                val sources =
+                    config.snapshots
+                        .filterNot { it.isHidden }
+                        .map { config.inheritKey(it.conversationId) }
+                        .distinct()
+                if (sources.size > 1) {
+                    list.addView(
+                        row().apply {
+                            setPadding(0, dp(4), 0, 0)
+                            addView(text("来源", 11f, COLOR_DIM).apply { setPadding(0, 0, dp(6), 0) })
+                            addView(
+                                android.widget.HorizontalScrollView(this@SparkSettingsActivity).apply {
+                                    isHorizontalScrollBarEnabled = false
+                                    addView(buildSourceFilterChips(config, sources))
+                                },
+                            )
+                        },
+                    )
+                }
+                applySparkFilter(sparkQuery, filterables, viewToId)
                 list.addView(singlesCard)
                 list.addView(groupsCard)
             }
@@ -954,12 +1040,117 @@ class SparkSettingsActivity : Activity() {
         expandedTemplateId = if (opening) id else null
     }
 
-    /** 会话的搜索文本：昵称 + 备注 + 来源模板名，够用来找人了。 */
+    /** 会话的搜索文本：昵称 + 备注（标签走标记筛选，不参与搜索）。 */
     private fun searchTextOf(snapshot: ConversationSnapshot): String =
         buildString {
             append(snapshot.displayName).append(' ')
             append(snapshot.remark).append(' ')
             append(snapshot.name)
+        }
+
+    /**
+     * 续火花页的筛选：搜索词（昵称 / 备注）+ 多选标签（**并集**：命中任一所选标签即可）+ 来源（单选）。
+     */
+    private fun applySparkFilter(
+        query: String,
+        groups: List<Pair<View, List<Pair<View, String>>>>,
+        viewToId: Map<View, String>,
+    ) {
+        val config = ConfigStore.load(this)
+        val keyword = query.trim().lowercase()
+        val tagging = sparkTagFilter.isNotEmpty()
+        groups.forEach { (card, rows) ->
+            var anyHit = keyword.isEmpty() && !tagging && sparkSourceFilter == null
+            rows.forEach { (view, text) ->
+                val id = viewToId[view]
+                val tagOk = !tagging || (id != null && config.tagsOf(id).any { it.id in sparkTagFilter })
+                val sourceOk =
+                    sparkSourceFilter == null ||
+                        (id != null && (config.inheritKey(id) ?: SRC_NONE) == sparkSourceFilter)
+                val textOk = keyword.isEmpty() || text.lowercase().contains(keyword)
+                val hit = tagOk && sourceOk && textOk
+                view.visibility = if (hit) View.VISIBLE else View.GONE
+                if (hit) anyHit = true
+            }
+            card.visibility = if (anyHit) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun buildTagFilterChips(config: SparkConfig): View =
+        row().apply {
+            addView(
+                filterChip("全部", sparkTagFilter.isEmpty()) {
+                    sparkTagFilter.clear()
+                    render()
+                },
+            )
+            config.tags.forEach { tag ->
+                val active = tag.id in sparkTagFilter
+                addView(
+                    filterChip(tag.name, active, if (active) null else SparkConfig.tagColor(tag.color)) {
+                        // 可多选：再点一次取消这一个，其余保留
+                        if (active) sparkTagFilter.remove(tag.id) else sparkTagFilter.add(tag.id)
+                        render()
+                    },
+                )
+            }
+        }
+
+    private fun buildSourceFilterChips(
+        config: SparkConfig,
+        sources: List<String?>,
+    ): View =
+        row().apply {
+            addView(
+                filterChip("全部", sparkSourceFilter == null) {
+                    sparkSourceFilter = null
+                    render()
+                },
+            )
+            sources.forEach { key ->
+                val value = key ?: SRC_NONE
+                val active = sparkSourceFilter == value
+                addView(
+                    filterChip(config.inheritLabel(key), active) {
+                        sparkSourceFilter = if (active) null else value
+                        render()
+                    },
+                )
+            }
+        }
+
+    /** 标记筛选的小药丸（选中：强调色 + 浅底；未选中：标签色或灰）。 */
+    private fun filterChip(
+        label: String,
+        active: Boolean,
+        color: Int? = null,
+        onClick: () -> Unit,
+    ): View =
+        text(label, 12f, if (active) COLOR_ACCENT else (color ?: COLOR_DIM), bold = active).apply {
+            background = rounded(if (active) 0x333B7CFF else 0x0A000000, 12)
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = dp(6) }
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
+    /** 会话行里的小标签。 */
+    private fun tagChip(
+        name: String,
+        color: Int,
+    ): View =
+        text(name, 11f, SparkConfig.tagColor(color)).apply {
+            background = rounded(0x14000000, 8)
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = dp(4) }
         }
 
     /** 应用搜索关键字：条目按关键字显隐，整组都不匹配就把那张卡片藏掉；顺手记住关键字。 */
@@ -972,7 +1163,7 @@ class SparkSettingsActivity : Activity() {
         filterGroups(query, groups)
     }
 
-    /** 多选后的操作条（没有勾选时隐藏）：上行计数 + 取消，下行两个批量移动按钮。 */
+    /** 多选后的操作条（没有勾选时隐藏）：计数 + 取消、批量移动。 */
     private fun buildSelectionBar(): View =
         column().apply {
             background = rounded(COLOR_CARD, 10)
@@ -1123,7 +1314,41 @@ class SparkSettingsActivity : Activity() {
                         },
                     )
                     addView(text(sparkText, 13f, sparkColor).apply { setPadding(0, dp(2), 0, 0) })
-                    addView(text(sourceText, 12.5f, COLOR_DIM).apply { setPadding(0, dp(2), 0, 0) })
+                    addView(
+                        text(sourceText, 12.5f, COLOR_DIM).apply {
+                            setPadding(0, dp(2), 0, 0)
+                            // 点「继承：X」直接按来源筛选
+                            isClickable = true
+                            setOnClickListener {
+                                sparkSourceFilter = config.inheritKey(id) ?: SRC_NONE
+                                render()
+                            }
+                        },
+                    )
+                    val tags = config.tagsOf(id)
+                    if (tags.isNotEmpty()) {
+                        addView(
+                            row().apply {
+                                setPadding(0, dp(3), 0, 0)
+                                tags.forEach { tag ->
+                                    addView(
+                                        tagChip(tag.name, tag.color).apply {
+                                            // 点标签切换这个标签的筛选（与顶部标记一致，可多选）
+                                            isClickable = true
+                                            setOnClickListener {
+                                                if (tag.id in sparkTagFilter) {
+                                                    sparkTagFilter.remove(tag.id)
+                                                } else {
+                                                    sparkTagFilter.add(tag.id)
+                                                }
+                                                render()
+                                            }
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
                     if (template?.modified == true) {
                         addView(
                             text("已本地修改（父模板同步时不会被覆盖）", 12f, COLOR_WARN)
@@ -1569,48 +1794,52 @@ class SparkSettingsActivity : Activity() {
         name: String,
         body: String,
     ) {
-        val snapshots = ConfigStore.load(this).snapshots.filter { !it.isGroup && !it.isHidden }
-        if (snapshots.isEmpty()) {
+        val config = ConfigStore.load(this)
+        if (config.snapshots.none { !it.isHidden && !it.isGroup }) {
             Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
             return
         }
-        val checked = BooleanArray(snapshots.size)
-        AlertDialog
-            .Builder(this)
-            .setTitle("克隆「$name」到会话")
-            .setMultiChoiceItems(snapshots.map { it.displayName.ifBlank { "(无名)" } }.toTypedArray(), checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }.setPositiveButton("克隆") { _, _ ->
-                val now = System.currentTimeMillis()
-                val source = TemplateSource(parentId = null, name = name, body = body)
-                ConfigStore.update(this) { config ->
-                    var list = config.conversations
-                    snapshots.forEachIndexed { index, snapshot ->
-                        if (!checked[index]) return@forEachIndexed
-                        val current = list.firstOrNull { it.conversationId == snapshot.conversationId }
-                        val next =
-                            TemplateOps.fromSource(
-                                conversationId = snapshot.conversationId,
-                                source = source,
-                                autoSync = false,
-                                now = now,
-                                selectedAt = current?.selectedAt ?: 0L,
-                                // 会话自己的变量不能被克隆冲掉
-                                variables = current?.variables.orEmpty(),
-                            )
-                        list =
-                            if (current == null) {
-                                list + next
-                            } else {
-                                list.map { if (it.conversationId == snapshot.conversationId) next else it }
-                            }
-                    }
-                    config.copy(conversations = list)
-                }
-                Toast.makeText(this, "已克隆到 ${checked.count { it }} 个会话", Toast.LENGTH_SHORT).show()
-                render()
-            }.setNegativeButton("取消", null)
-            .show()
+        pendingCloneName = name
+        pendingCloneBody = body
+        runCatching {
+            startActivityForResult(
+                Intent(this, ConversationPickerActivity::class.java)
+                    .putExtra(ConversationPickerActivity.EXTRA_TITLE, "克隆「$name」到会话")
+                    .putStringArrayListExtra(ConversationPickerActivity.EXTRA_SELECTED, ArrayList<String>()),
+                REQUEST_PICK_CLONE,
+            )
+        }.onFailure { Toast.makeText(this, "打不开会话选择页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 会话选择页回来：把选中的会话克隆成该模板内容。 */
+    private fun applyClone(data: Intent?) {
+        val name = pendingCloneName
+        val body = pendingCloneBody
+        pendingCloneName = ""
+        pendingCloneBody = ""
+        val picked = data?.getStringArrayListExtra(ConversationPickerActivity.EXTRA_RESULT).orEmpty().toSet()
+        val now = System.currentTimeMillis()
+        val source = TemplateSource(parentId = null, name = name, body = body)
+        ConfigStore.update(this) { config ->
+            var list = config.conversations
+            picked.forEach { conversationId ->
+                val current = list.firstOrNull { it.conversationId == conversationId }
+                val next =
+                    TemplateOps.fromSource(
+                        conversationId = conversationId,
+                        source = source,
+                        autoSync = false,
+                        now = now,
+                        selectedAt = current?.selectedAt ?: 0L,
+                        // 会话自己的变量不能被克隆冲掉
+                        variables = current?.variables.orEmpty(),
+                    )
+                list = if (current == null) list + next else list.map { if (it.conversationId == conversationId) next else it }
+            }
+            config.copy(conversations = list)
+        }
+        Toast.makeText(this, "已克隆到 ${picked.size} 个会话", Toast.LENGTH_SHORT).show()
+        render()
     }
 
     /**
@@ -1623,61 +1852,72 @@ class SparkSettingsActivity : Activity() {
         templateName: String,
     ) {
         val config = ConfigStore.load(this)
-        val snapshots = config.snapshots.filter { !it.isGroup && !it.isHidden }
-        if (snapshots.isEmpty()) {
+        if (config.snapshots.none { !it.isHidden && !it.isGroup }) {
             Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
             return
         }
+        pendingPickTemplateId = templateId
+        pendingPickTemplateName = templateName
+        val preselected = config.conversations.filter { it.inheritFrom == templateId }.map { it.conversationId }
+        runCatching {
+            startActivityForResult(
+                Intent(this, ConversationPickerActivity::class.java)
+                    .putExtra(ConversationPickerActivity.EXTRA_TITLE, "选择继承「${templateName.ifBlank { "(未命名)" }}」的会话")
+                    .putStringArrayListExtra(ConversationPickerActivity.EXTRA_SELECTED, ArrayList(preselected)),
+                REQUEST_PICK_MEMBERS,
+            )
+        }.onFailure { Toast.makeText(this, "打不开会话选择页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 会话选择页回来：按选中的会话更新继承关系（取消的退回空白模板）。 */
+    private fun applyPickedMembers(data: Intent?) {
+        val templateId = pendingPickTemplateId ?: return
+        val templateName = pendingPickTemplateName
+        pendingPickTemplateId = null
+        pendingPickTemplateName = ""
+        val picked = data?.getStringArrayListExtra(ConversationPickerActivity.EXTRA_RESULT).orEmpty().toSet()
+        val config = ConfigStore.load(this)
         val source = TemplateSource(templateId, templateName, config.templateBody(templateId))
-        val checked = BooleanArray(snapshots.size) { config.conversation(snapshots[it].conversationId)?.inheritFrom == templateId }
-        AlertDialog
-            .Builder(this)
-            .setTitle("选择继承「${templateName.ifBlank { "(未命名)" }}」的会话")
-            .setMultiChoiceItems(snapshots.map { it.displayName.ifBlank { "(无名)" } }.toTypedArray(), checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }.setPositiveButton("应用") { _, _ ->
-                val now = System.currentTimeMillis()
-                ConfigStore.update(this) { cfg ->
-                    var list = cfg.conversations
-                    snapshots.forEachIndexed { index, snapshot ->
-                        val current = list.firstOrNull { it.conversationId == snapshot.conversationId }
-                        val next: ConversationTemplate? =
-                            when {
-                                checked[index] && current?.inheritFrom != templateId ->
-                                    TemplateOps.fromSource(
-                                        conversationId = snapshot.conversationId,
-                                        source = source,
-                                        autoSync = current?.autoSync ?: false,
-                                        now = now,
-                                        selectedAt = current?.selectedAt ?: 0L,
-                                        // 会话自己的变量不跟着继承关系走
-                                        variables = current?.variables.orEmpty(),
-                                    )
-                                !checked[index] && current?.inheritFrom == templateId ->
-                                    TemplateOps.blank(
-                                        snapshot.conversationId,
-                                        current.body,
-                                        now,
-                                        current.selectedAt,
-                                        current.variables,
-                                    )
-                                else -> null
-                            }
-                        if (next != null) {
-                            list =
-                                if (current == null) {
-                                    list + next
-                                } else {
-                                    list.map { if (it.conversationId == snapshot.conversationId) next else it }
-                                }
-                        }
+        val now = System.currentTimeMillis()
+        ConfigStore.update(this) { cfg ->
+            var list = cfg.conversations
+            cfg.snapshots.filter { !it.isHidden && !it.isGroup }.forEach { snapshot ->
+                val conversationId = snapshot.conversationId
+                val current = list.firstOrNull { it.conversationId == conversationId }
+                val next: ConversationTemplate? =
+                    when {
+                        conversationId in picked && current?.inheritFrom != templateId ->
+                            TemplateOps.fromSource(
+                                conversationId = conversationId,
+                                source = source,
+                                autoSync = current?.autoSync ?: false,
+                                now = now,
+                                selectedAt = current?.selectedAt ?: 0L,
+                                variables = current?.variables.orEmpty(),
+                            )
+                        conversationId !in picked && current?.inheritFrom == templateId ->
+                            TemplateOps.blank(
+                                conversationId,
+                                current.body,
+                                now,
+                                current.selectedAt,
+                                current.variables,
+                            )
+                        else -> null
                     }
-                    cfg.copy(conversations = list)
+                if (next != null) {
+                    list =
+                        if (current == null) {
+                            list + next
+                        } else {
+                            list.map { if (it.conversationId == conversationId) next else it }
+                        }
                 }
-                Toast.makeText(this, "已更新继承关系", Toast.LENGTH_SHORT).show()
-                render()
-            }.setNegativeButton("取消", null)
-            .show()
+            }
+            cfg.copy(conversations = list)
+        }
+        Toast.makeText(this, "已更新继承关系", Toast.LENGTH_SHORT).show()
+        render()
     }
 
 
@@ -2141,25 +2381,25 @@ class SparkSettingsActivity : Activity() {
                 }
             },
         )
-        val macroFilter = mutableListOf<Pair<View, List<Pair<View, String>>>>()
+        val rows = mutableListOf<View>()
+        val filterables = mutableListOf<Pair<View, List<Pair<View, String>>>>()
         val macroEmpty = text("没有匹配的宏 / 函数", 13f, COLOR_DIM).apply { visibility = View.GONE }
         page.addView(
             searchRow("搜索宏 / 函数名与内容", macroQuery) { query ->
                 macroQuery = query
-                filterGroups(query, macroFilter)
-                macroEmpty.visibility = if (query.isNotBlank() && macroFilter.none { it.first.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
+                filterGroups(query, filterables)
+                macroEmpty.visibility = if (query.isNotBlank() && rows.none { it.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
             },
         )
         val body = column().apply { setPadding(0, dp(8), 0, dp(16)) }
         if (functionsPage == PAGE_MACROS) {
-            buildMacrosSection(config, body)
+            buildMacrosSection(config, body, rows)
         } else {
-            buildFunctionsSection(config, body)
+            buildFunctionsSection(config, body, rows)
         }
-        val macroCards = (0 until body.childCount).map { body.getChildAt(it) }
-        // 每张卡片各自成组，避免把搜索行一起藏掉
-        macroCards.forEach { card -> macroFilter += card to listOf(card to card.textContent()) }
-        if (macroQuery.isNotEmpty()) filterGroups(macroQuery, macroFilter)
+        filterables += body to rows.map { row -> row to row.textContent() }
+        if (macroQuery.isNotEmpty()) filterGroups(macroQuery, filterables)
+        macroEmpty.visibility = if (macroQuery.isNotBlank() && rows.none { it.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
         page.addView(
             scroll().apply { addView(body) },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
@@ -2177,25 +2417,47 @@ class SparkSettingsActivity : Activity() {
         return page
     }
 
-    /** 宏列表 + 新增（宏在模板脚本之后执行，可挂多个模板/会话）。 */
+    /** 宏列表（纯滚动列表，不再折叠）+ 新增（宏在模板脚本之后执行，可挂多个模板/会话）。 */
     private fun buildMacrosSection(
         config: SparkConfig,
         body: LinearLayout,
+        rows: MutableList<View>,
     ) {
         if (config.macros.isEmpty()) {
             body.addView(text("还没有宏", 14f, COLOR_DIM))
             return
         }
         body.addView(
-            sectionCard(
-                title = "宏",
-                count = config.macros.size,
-                hint = "点一行编辑；宏在模板脚本之后执行",
-                collapsed = macrosCollapsed,
-                onToggle = { macrosCollapsed = it },
-                items = config.macros.map { macro -> macroItem(config, macro) },
-            ),
+            text("宏在模板脚本之后执行；点一行编辑", 12f, COLOR_DIM)
+                .apply { setPadding(0, 0, 0, dp(4)) },
         )
+        addCards(body, rows, config.macros.map { macro -> macroItem(config, macro) })
+    }
+
+    /** 把一行包成卡片（圆角浅底，卡片之间留 8dp），替代生硬的横线分隔。 */
+    private fun cardRow(item: View): View =
+        column().apply {
+            background = rounded(COLOR_CARD, 12)
+            setPadding(dp(14), dp(2), dp(14), dp(2))
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dp(8) }
+            addView(item)
+        }
+
+    /** 把列表行以卡片形式加进页面；筛选时整张卡片一起显隐。 */
+    private fun addCards(
+        body: LinearLayout,
+        rows: MutableList<View>,
+        items: List<View>,
+    ) {
+        items.forEach { item ->
+            val card = cardRow(item)
+            body.addView(card)
+            rows += card
+        }
     }
 
     /** 宏列表里的一行：名字 + 生效目标 + 首行代码；点整行编辑。 */
@@ -2224,25 +2486,21 @@ class SparkSettingsActivity : Activity() {
         }
     }
 
-    /** 自定义函数列表 + 新增（注入成 ctx.functions.<名字>）。 */
+    /** 自定义函数列表（纯滚动列表，不再折叠）+ 新增（注入成 ctx.functions.<名字>）。 */
     private fun buildFunctionsSection(
         config: SparkConfig,
         body: LinearLayout,
+        rows: MutableList<View>,
     ) {
         if (config.functions.isEmpty()) {
             body.addView(text("还没有自定义函数", 14f, COLOR_DIM))
             return
         }
         body.addView(
-            sectionCard(
-                title = "函数",
-                count = config.functions.size,
-                hint = "点一行编辑；注入成 ctx.functions.<名字>",
-                collapsed = functionsCollapsed,
-                onToggle = { functionsCollapsed = it },
-                items = config.functions.map { fn -> functionItem(fn) },
-            ),
+            text("注入成 ctx.functions.<名字>；点一行编辑", 12f, COLOR_DIM)
+                .apply { setPadding(0, 0, 0, dp(4)) },
         )
+        addCards(body, rows, config.functions.map { fn -> functionItem(fn) })
     }
 
     /** 函数列表里的一行：签名 + 说明 + 前两行代码；点整行编辑。 */
@@ -2280,6 +2538,206 @@ class SparkSettingsActivity : Activity() {
             Intent(this, FunctionEditActivity::class.java)
                 .putExtra(FunctionEditActivity.EXTRA_FUNCTION_ID, functionId),
         )
+    }
+
+    // -------------------------------------------------------------------- 标签
+
+    /**
+     * 标签页：顶层标签之一（与模板同级），只有一个滚动列表，不再做折叠分组。
+     *
+     * 点一行 = 管理这个标签包含的会话；右侧图标改名 / 换色 / 删除。
+     */
+    private fun buildTagPage(config: SparkConfig): View {
+        val page = column()
+        val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
+        if (config.tags.isEmpty()) {
+            body.addView(
+                text("还没有标签。标签用来把会话分组（家人 / 同事 / 待续……），只影响整理和筛选，不影响发送。", 14f, COLOR_DIM),
+            )
+        } else {
+            val usage = config.tagUsage()
+            body.addView(
+                text("点击配置要使用该标签的会话；右侧图标改名 / 换色 / 删除。", 12f, COLOR_DIM)
+                    .apply { setPadding(0, 0, 0, dp(4)) },
+            )
+            config.tags.forEach { tag ->
+                body.addView(cardRow(tagRow(tag, usage[tag.id] ?: 0)))
+            }
+        }
+        page.addView(
+            scroll().apply { addView(body) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+        page.addView(
+            bottomBar {
+                addView(iconButton(UiKit.Icons.ADD, "新增标签", primary = true, compact = true) { showTagDialog(null) })
+            },
+        )
+        return page
+    }
+
+    private fun tagRow(
+        tag: SparkTag,
+        count: Int,
+    ): View =
+        flatRow().apply {
+            addView(
+                View(this@SparkSettingsActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(14), dp(14)).apply { marginEnd = dp(10) }
+                    background = rounded(SparkConfig.tagColor(tag.color), 7)
+                },
+            )
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(tag.name, 15f, COLOR_TEXT, bold = true))
+                    addView(text(if (count == 0) "还没有会话用它 · 点击配置目标" else "$count 个会话 · 点击配置目标", 12f, COLOR_DIM))
+                },
+            )
+            addView(iconButton(UiKit.Icons.EDIT, "", compact = true, hint = "改名 / 换色") { showTagDialog(tag) })
+            addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDeleteTag(tag) })
+            isClickable = true
+            setOnClickListener { openTagMembership(tag) }
+        }
+
+    /** 新增 / 编辑标签（名字 + 颜色表单）。 */
+    private fun showTagDialog(existing: SparkTag?) {
+        val config = ConfigStore.load(this)
+        val nameField =
+            EditText(this).apply {
+                setText(existing?.name.orEmpty())
+                hint = "标签名，比如：家人 / 同事"
+                setSingleLine()
+                inputType = InputType.TYPE_CLASS_TEXT
+            }
+        var color = existing?.color ?: (config.tags.size % SparkConfig.TAG_COLORS.size)
+        val colorsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun paintColors() {
+            colorsRow.removeAllViews()
+            SparkConfig.TAG_COLORS.indices.forEach { index ->
+                colorsRow.addView(
+                    View(this).apply {
+                        layoutParams =
+                            LinearLayout.LayoutParams(0, dp(30), 1f).apply { marginEnd = dp(6) }
+                        background =
+                            rounded(SparkConfig.tagColor(index), 15).apply {
+                                if (index == color) setStroke(dp(2), COLOR_TEXT)
+                            }
+                        isClickable = true
+                        setOnClickListener {
+                            color = index
+                            paintColors()
+                        }
+                    },
+                )
+            }
+        }
+        paintColors()
+        val box =
+            column().apply {
+                setPadding(dp(20), dp(8), dp(20), dp(0))
+                addView(nameField)
+                addView(text("颜色", 12f, COLOR_DIM).apply { setPadding(0, dp(10), 0, dp(6)) })
+                addView(colorsRow)
+            }
+        val dialog =
+            AlertDialog
+                .Builder(this)
+                .setTitle(if (existing == null) "新增标签" else "编辑标签")
+                .setView(box)
+                .setPositiveButton("保存", null)
+                .setNegativeButton("取消", null)
+                .apply { if (existing != null) setNeutralButton("删除", null) }
+                .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = nameField.text.toString().trim()
+                if (name.isEmpty()) {
+                    Toast.makeText(this, "标签名不能为空", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                if (config.tags.any { it.id != existing?.id && it.name == name }) {
+                    Toast.makeText(this, "已经有同名标签了", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                ConfigStore.update(this) { cfg ->
+                    if (existing == null) {
+                        cfg.copy(
+                            tags =
+                                cfg.tags +
+                                    SparkTag(
+                                        id = java.util.UUID.randomUUID().toString(),
+                                        name = name,
+                                        color = color,
+                                        createdAt = System.currentTimeMillis(),
+                                    ),
+                        )
+                    } else {
+                        cfg.copy(tags = cfg.tags.map { if (it.id == existing.id) it.copy(name = name, color = color) else it })
+                    }
+                }
+                dialog.dismiss()
+                render()
+            }
+            if (existing != null) {
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    dialog.dismiss()
+                    confirmDeleteTag(existing)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun confirmDeleteTag(tag: SparkTag) {
+        val used = ConfigStore.load(this).conversationTags.count { tag.id in it.value }
+        AlertDialog
+            .Builder(this)
+            .setTitle("删除标签「${tag.name}」？")
+            .setMessage(if (used > 0) "有 $used 个会话在用这个标签，删除后会从它们身上一起摘掉。" else "这个标签还没有被使用。")
+            .setPositiveButton("删除") { _, _ ->
+                ConfigStore.update(this) { it.withoutTag(tag.id) }
+                Toast.makeText(this, "已删除标签", Toast.LENGTH_SHORT).show()
+                render()
+            }.setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 点标签行：进会话选择页勾选这个标签包含哪些会话（确定即替换归属）。 */
+    private fun openTagMembership(tag: SparkTag) {
+        val config = ConfigStore.load(this)
+        if (config.snapshots.none { !it.isHidden }) {
+            Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingTagId = tag.id
+        val preselected = config.conversationTags.filterValues { tag.id in it }.keys.toList()
+        runCatching {
+            startActivityForResult(
+                Intent(this, ConversationPickerActivity::class.java)
+                    .putExtra(ConversationPickerActivity.EXTRA_TITLE, "「${tag.name}」包含的会话")
+                    .putExtra(ConversationPickerActivity.EXTRA_ONLY_SINGLE, false)
+                    .putStringArrayListExtra(ConversationPickerActivity.EXTRA_SELECTED, ArrayList(preselected)),
+                REQUEST_TAG_MEMBERS,
+            )
+        }.onFailure { Toast.makeText(this, "打不开会话选择页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 会话选择页回来：按勾选结果替换这个标签的会话集合。 */
+    private fun applyTagMembership(data: Intent?) {
+        val tagId = pendingTagId ?: return
+        pendingTagId = null
+        val picked = data?.getStringArrayListExtra(ConversationPickerActivity.EXTRA_RESULT).orEmpty().toSet()
+        ConfigStore.update(this) { config ->
+            val current = config.conversationTags.filterValues { tagId in it }.keys
+            var next = config
+            val add = picked - current
+            val remove = current - picked
+            if (add.isNotEmpty()) next = next.applyTag(add, tagId, true)
+            if (remove.isNotEmpty()) next = next.applyTag(remove, tagId, false)
+            next
+        }
+        render()
     }
 
     // -------------------------------------------------------------------- 设置
@@ -2361,7 +2819,6 @@ class SparkSettingsActivity : Activity() {
             SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(config.hostNoteAt))
         }
 
-
     /** 一行「名称 —— 值」。 */
     private fun infoLine(
         label: String,
@@ -2395,12 +2852,13 @@ class SparkSettingsActivity : Activity() {
             .show()
     }
 
-    private companion object {
-        val TABS = listOf("续火花", "模板", "宏/函数", "设置")
+    companion object {
+        val TABS = listOf("续火花", "模板", "标签", "宏/函数", "设置")
         val TAB_ICONS =
             listOf(
                 UiKit.Icons.FIRE,
                 UiKit.Icons.TEMPLATE,
+                UiKit.Icons.TAG,
                 UiKit.Icons.CODE,
                 UiKit.Icons.GEAR,
             )
@@ -2420,8 +2878,9 @@ class SparkSettingsActivity : Activity() {
 
         const val TAB_SPARK = 0
         const val TAB_TEMPLATE = 1
-        const val TAB_FUNCTIONS = 2
-        const val TAB_SETTINGS = 3
+        const val TAB_TAG = 2
+        const val TAB_FUNCTIONS = 3
+        const val TAB_SETTINGS = 4
 
         const val PAGE_SELECTED = 0
         const val PAGE_UNSELECTED = 1
@@ -2462,6 +2921,15 @@ class SparkSettingsActivity : Activity() {
 
         /** 派生项长按 → 编辑这个会话自己的变量。 */
         const val REQUEST_CONVERSATION_VARS = 0x64
+        const val REQUEST_PICK_MEMBERS = 0x65
+        const val REQUEST_PICK_CLONE = 0x66
+        const val REQUEST_TAG_MEMBERS = 0x68
+
+        /** 从别处直接落到某个顶层标签（例如会话编辑页的「管理标签」）。 */
+        const val EXTRA_TAB = "extra_tab"
+
+        /** 「来源」筛选里代表「未写文案」的哨兵值（模板 id 不会是它）。 */
+        private const val SRC_NONE = "none:"
 
         /** 抖音火苗状态码（见 ConversationSnapshot 注释）。 */
         const val SPARK_DONE = 1

@@ -19,6 +19,8 @@ import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.app.script.PreviewData
 import com.worldmargin.autospark.app.script.TemplateVarPrelude
 import com.worldmargin.autospark.app.config.ConfigStore
+import com.worldmargin.autospark.app.ui.conversation.ConversationPickerActivity
+import com.worldmargin.autospark.app.config.ConversationTemplate
 import com.worldmargin.autospark.app.ui.common.UiKit.asClickable
 import com.worldmargin.autospark.app.ui.common.UiKit.actionRow
 import com.worldmargin.autospark.app.ui.common.UiKit.column
@@ -47,6 +49,7 @@ class TemplateEditActivity : Activity() {
 
         /** 变量页的请求码。 */
         private const val REQUEST_VARIABLES = 0x72
+        private const val REQUEST_PICK_MEMBERS = 0x73
     }
 
     private var groupId: String? = null
@@ -178,6 +181,10 @@ class TemplateEditActivity : Activity() {
         data: Intent?,
     ) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_PICK_MEMBERS) {
+            if (resultCode == RESULT_OK) applyPickedMembers(data)
+            return
+        }
         if (requestCode != REQUEST_VARIABLES || resultCode != RESULT_OK || data == null) return
         val raw = data.getStringExtra(VariableListActivity.RESULT_VARS) ?: return
         vars =
@@ -344,64 +351,67 @@ class TemplateEditActivity : Activity() {
         finish()
     }
 
-    /** 选择哪些会话继承本模板（勾选=继承本模板，取消=变为空白自定义）。 */
+    /** 选择哪些会话继承本模板：打开独立的选择页（可搜标签、可多选）。 */
     private fun pickMembers() {
         val id = groupId ?: return
         val config = ConfigStore.load(this)
-        val snapshots = config.snapshots.filter { !it.isGroup && !it.isHidden }
-        if (snapshots.isEmpty()) {
+        if (config.snapshots.none { !it.isHidden && !it.isGroup }) {
             Toast.makeText(this, "暂无会话快照，请先在主页刷新会话", Toast.LENGTH_SHORT).show()
             return
         }
-        val checked =
-            BooleanArray(snapshots.size) {
-                config.conversation(snapshots[it].conversationId)?.inheritFrom == id
-            }
-        AlertDialog
-            .Builder(this)
-            .setTitle("选择继承本模板的会话")
-            .setMultiChoiceItems(snapshots.map { it.displayName.ifBlank { "(无名)" } }.toTypedArray(), checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }.setPositiveButton("应用") { _, _ ->
-                val now = System.currentTimeMillis()
-                ConfigStore.update(this) { cfg ->
-                    val group = cfg.group(id) ?: return@update cfg
-                    var list = cfg.conversations
-                    snapshots.forEachIndexed { index, snapshot ->
-                        val current = list.firstOrNull { it.conversationId == snapshot.conversationId }
-                        if (checked[index]) {
-                            if (current?.inheritFrom != id) {
-                                val next =
-                                    TemplateOps.inheritFrom(
-                                        group,
-                                        snapshot.conversationId,
-                                        current?.autoSync ?: false,
-                                        now,
-                                        variables = current?.variables.orEmpty(),
-                                    )
-                                list =
-                                    if (current == null) {
-                                        list + next
-                                    } else {
-                                        list.map { if (it.conversationId == snapshot.conversationId) next else it }
-                                    }
-                            }
-                        } else if (current != null && current.inheritFrom == id) {
-                            val next =
-                                TemplateOps.blank(
-                                    current.conversationId,
-                                    current.body,
-                                    now,
-                                    variables = current.variables,
-                                )
-                            list = list.map { if (it.conversationId == snapshot.conversationId) next else it }
-                        }
+        val preselected = config.conversations.filter { it.inheritFrom == id }.map { it.conversationId }
+        runCatching {
+            startActivityForResult(
+                Intent(this, ConversationPickerActivity::class.java)
+                    .putExtra(ConversationPickerActivity.EXTRA_TITLE, "选择继承本模板的会话")
+                    .putStringArrayListExtra(ConversationPickerActivity.EXTRA_SELECTED, ArrayList(preselected)),
+                REQUEST_PICK_MEMBERS,
+            )
+        }.onFailure { Toast.makeText(this, "打不开会话选择页", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** 选择页回来：勾上的继承本模板，取消的退回空白模板（内容保留）。 */
+    private fun applyPickedMembers(data: Intent?) {
+        val id = groupId ?: return
+        val picked = data?.getStringArrayListExtra(ConversationPickerActivity.EXTRA_RESULT).orEmpty().toSet()
+        val now = System.currentTimeMillis()
+        ConfigStore.update(this) { cfg ->
+            val group = cfg.group(id) ?: return@update cfg
+            var list = cfg.conversations
+            cfg.snapshots.filter { !it.isHidden && !it.isGroup }.forEach { snapshot ->
+                val conversationId = snapshot.conversationId
+                val current = list.firstOrNull { it.conversationId == conversationId }
+                val next: ConversationTemplate? =
+                    when {
+                        conversationId in picked && current?.inheritFrom != id ->
+                            TemplateOps.inheritFrom(
+                                group,
+                                conversationId,
+                                current?.autoSync ?: false,
+                                now,
+                                variables = current?.variables.orEmpty(),
+                            )
+                        conversationId !in picked && current?.inheritFrom == id ->
+                            TemplateOps.blank(
+                                conversationId,
+                                current.body,
+                                now,
+                                variables = current.variables,
+                            )
+                        else -> null
                     }
-                    cfg.copy(conversations = list)
+                if (next != null) {
+                    list =
+                        if (current == null) {
+                            list + next
+                        } else {
+                            list.map { if (it.conversationId == conversationId) next else it }
+                        }
                 }
-                Toast.makeText(this, "已更新继承关系", Toast.LENGTH_SHORT).show()
-            }.setNegativeButton("取消", null)
-            .show()
+            }
+            cfg.copy(conversations = list)
+        }
+        Toast.makeText(this, "已更新继承关系", Toast.LENGTH_SHORT).show()
     }
 
     private fun confirmDelete() {

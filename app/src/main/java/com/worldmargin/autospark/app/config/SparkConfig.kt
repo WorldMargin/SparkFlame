@@ -181,6 +181,18 @@ data class SandboxVar(
     val value: String,
 )
 
+/**
+ * 会话标签：纯展示 / 筛选用，不参与发送决策。
+ *
+ * [color] 是调色板下标（见 [SparkConfig.TAG_COLORS]），不是 ARGB —— 存下标跨版本换配色更方便。
+ */
+data class SparkTag(
+    val id: String,
+    val name: String,
+    val color: Int = 0,
+    val createdAt: Long = 0L,
+)
+
 data class SparkConfig(
     val enabled: Boolean = false,
     /**
@@ -202,6 +214,10 @@ data class SparkConfig(
     val functions: List<UserFunction> = emptyList(),
     /** 沙盒变量：脚本 `ctx.sandbox.setvar` 写下的 JSON 数据，按创建者归属。 */
     val sandbox: List<SandboxVar> = emptyList(),
+    /** 会话标签（展示 / 筛选用，不参与发送决策）。 */
+    val tags: List<SparkTag> = emptyList(),
+    /** 会话 id → 标签 id 集合；一个会话可以有多个标签。 */
+    val conversationTags: Map<String, Set<String>> = emptyMap(),
     /**
      * 宿主（抖音进程）最近一次运行的简报：快照刷新是否成功、失败原因、续火花结果。
      * 本机 LSPosed 日志不可用，这是唯一能让管理界面看到宿主侧状态的通道。
@@ -214,6 +230,69 @@ data class SparkConfig(
     fun group(id: String?): TemplateGroup? = groups.firstOrNull { it.id == id }
 
     fun conversation(id: String): ConversationTemplate? = conversations.firstOrNull { it.conversationId == id }
+
+    fun tag(id: String): SparkTag? = tags.firstOrNull { it.id == id }
+
+    /** 某个会话身上的标签（按标签定义顺序）。 */
+    fun tagsOf(conversationId: String): List<SparkTag> =
+        conversationTags[conversationId].orEmpty().mapNotNull { id -> tag(id) }
+
+    /** 设置某个会话的标签集合（空集合 = 清空）。 */
+    fun withConversationTags(
+        conversationId: String,
+        tagIds: Set<String>,
+    ): SparkConfig {
+        val next = conversationTags.toMutableMap()
+        val valid = tagIds.filter { id -> tag(id) != null }.toSet()
+        if (valid.isEmpty()) next.remove(conversationId) else next[conversationId] = valid
+        return copy(conversationTags = next)
+    }
+
+    /** 标签 id → 使用它的会话数。 */
+    fun tagUsage(): Map<String, Int> =
+        tags.associate { item -> item.id to conversationTags.count { ids -> item.id in ids.value } }
+
+    /** 继承来源的展示名；[inheritFrom] 为 null 表示这个会话还没写文案。 */
+    fun inheritLabel(inheritFrom: String?): String =
+        when {
+            inheritFrom == null -> "未写文案"
+            inheritFrom == BUILTIN_BLANK -> "空白模板"
+            else -> templateName(inheritFrom) ?: "已删除的模板"
+        }
+
+    /** 会话的继承来源键：null = 未写文案，[BUILTIN_BLANK] = 空白，其余为模板 id。 */
+    fun inheritKey(conversationId: String): String? = conversation(conversationId)?.inheritFrom
+
+    /** 删除标签，并把它从所有会话上摘掉。 */
+    fun withoutTag(tagId: String): SparkConfig =
+        copy(
+            tags = tags.filterNot { it.id == tagId },
+            conversationTags =
+                conversationTags
+                    .mapValues { (_, ids) -> ids - tagId }
+                    .filterValues { it.isNotEmpty() },
+        )
+
+    /**
+     * 批量给多个会话加 / 去同一个标签。
+     *
+     * [add] = true 是加（幂等），false 是去（没有该标签的会话不受影响）。
+     * 标签不存在时原样返回，避免脏数据。
+     */
+    fun applyTag(
+        conversationIds: Collection<String>,
+        tagId: String,
+        add: Boolean,
+    ): SparkConfig {
+        if (tag(tagId) == null) return this
+        val next = conversationTags.toMutableMap()
+        conversationIds.forEach { conversationId ->
+            val current = next[conversationId].orEmpty()
+            val updated = if (add) current + tagId else current - tagId
+            if (updated.isEmpty()) next.remove(conversationId) else next[conversationId] = updated
+        }
+        return copy(conversationTags = next)
+    }
 
     /** 是否列入「需要续火花」：抖音侧「今天还没互动」（火苗灰 / 待重燃），可被手动移动覆盖。 */
     fun needsRenewal(snapshot: ConversationSnapshot): Boolean =
@@ -259,11 +338,12 @@ data class SparkConfig(
                 kept += old.copy(missCount = old.missCount + 1)
             }
         }
-        // 快照删除后，手动归属里指向它的 id 一起清掉（否则「已选目标」会永远多一个幽灵）
+        // 快照删除后，手动归属与标签里指向它的 id 一起清掉（否则「已选目标」会永远多一个幽灵）
         return copy(
             snapshots = merged + kept,
             forcedRenew = forcedRenew - expired,
             forcedSkip = forcedSkip - expired,
+            conversationTags = conversationTags - expired,
         )
     }
 
@@ -465,6 +545,22 @@ data class SparkConfig(
 
         /** 连续这么多次扫描没出现，会话就从列表里隐藏（数据保留到 [SNAPSHOT_GRACE_MS]）。 */
         const val HIDDEN_AFTER_MISSES = 3
+
+        /** 标签调色板（标签只存下标，换配色不影响老配置）。 */
+        val TAG_COLORS =
+            listOf(
+                0xFF3B82F6.toInt(), // 蓝
+                0xFF22C55E.toInt(), // 绿
+                0xFFF59E0B.toInt(), // 橙
+                0xFFEF4444.toInt(), // 红
+                0xFF8B5CF6.toInt(), // 紫
+                0xFF06B6D4.toInt(), // 青
+                0xFFEC4899.toInt(), // 粉
+                0xFF64748B.toInt(), // 灰
+            )
+
+        /** 标签色（下标越界时夹到合法范围）。 */
+        fun tagColor(index: Int): Int = TAG_COLORS[index.coerceIn(0, TAG_COLORS.lastIndex)]
 
         /** 内置模板作为继承来源时的 id 前缀（内置模板不在 groups 里，用前缀区分）。 */
         const val BUILTIN_PREFIX = "builtin:"
@@ -712,6 +808,8 @@ object ConfigCodec {
     private const val KEY_HOST_ALIVE_AT = "hostAliveAt"
     private const val KEY_MACROS = "macros"
     private const val KEY_FUNCTIONS = "functions"
+    private const val KEY_TAGS = "tags"
+    private const val KEY_CONVERSATION_TAGS = "conversationTags"
         private const val KEY_SANDBOX = "sandbox"
 
     private const val INHERIT_BLANK = "blank"
@@ -844,6 +942,22 @@ object ConfigCodec {
             )
         }
 
+        val tags = JSONArray()
+        config.tags.forEach { item ->
+            tags.put(
+                JSONObject()
+                    .put("id", item.id)
+                    .put("name", item.name)
+                    .put("color", item.color)
+                    .put("createdAt", item.createdAt),
+            )
+        }
+
+        val conversationTags = JSONObject()
+        config.conversationTags.forEach { (conversationId, ids) ->
+            conversationTags.put(conversationId, JSONArray(ids.toList()))
+        }
+
         return JSONObject()
             .put(KEY_ENABLED, config.enabled)
             .put(KEY_GROUPS, groups)
@@ -855,6 +969,8 @@ object ConfigCodec {
             .put(KEY_MACROS, macros)
             .put(KEY_FUNCTIONS, functions)
             .put(KEY_SANDBOX, sandbox)
+            .put(KEY_TAGS, tags)
+            .put(KEY_CONVERSATION_TAGS, conversationTags)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
             .put(KEY_HOST_ALIVE_AT, config.hostAliveAt)
@@ -974,6 +1090,35 @@ object ConfigCodec {
             }
         }
 
+        val tags = mutableListOf<SparkTag>()
+        root.optJSONArray(KEY_TAGS)?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val name = item.optString("name").trim()
+                if (name.isEmpty()) continue
+                tags +=
+                    SparkTag(
+                        id = item.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                        name = name,
+                        color = item.optInt("color"),
+                        createdAt = item.optLong("createdAt"),
+                    )
+            }
+        }
+
+        val conversationTags = mutableMapOf<String, Set<String>>()
+        root.optJSONObject(KEY_CONVERSATION_TAGS)?.let { obj ->
+            obj.keys().forEach { conversationId ->
+                val ids =
+                    obj.optJSONArray(conversationId)?.let { array ->
+                        (0 until array.length())
+                            .mapNotNull { index -> array.optString(index).takeIf { it.isNotEmpty() } }
+                            .toSet()
+                    }.orEmpty()
+                if (ids.isNotEmpty()) conversationTags[conversationId] = ids
+            }
+        }
+
         return SparkConfig(
             enabled = root.optBoolean(KEY_ENABLED),
             defaultGroupId = root.optString(KEY_DEFAULT_GROUP).takeIf { it.isNotEmpty() && it != "null" },
@@ -986,6 +1131,8 @@ object ConfigCodec {
             macros = macros,
             functions = functions,
             sandbox = sandbox,
+            tags = tags,
+            conversationTags = conversationTags,
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),
             hostAliveAt = root.optLong(KEY_HOST_ALIVE_AT),

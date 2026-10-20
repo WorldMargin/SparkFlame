@@ -354,6 +354,8 @@ object SparkScriptEngine {
             cx.setClassShutter(denyJava)
             cx.instructionObserverThreshold = OBSERVER_THRESHOLD
             val argument = cx.newObject(scope)
+            // 统一用 id；conversationId 是同一值的旧名，保留兼容
+            ScriptableObject.putProperty(argument, "id", conversationId)
             ScriptableObject.putProperty(argument, "conversationId", conversationId)
             ScriptableObject.putProperty(argument, "result", result)
             if (reason.isNotBlank()) ScriptableObject.putProperty(argument, "reason", reason)
@@ -443,7 +445,7 @@ object SparkScriptEngine {
             Doc(
                 "getAllConversation",
                 "filter?: SparkConversationFilter",
-                "本轮会话；可按条件筛（对象逐项相等，数组表示其中之一，函数自定义判断）",
+                "本轮会话（SparkConversation[]）；对象逐项相等 / 数组任一 / 函数判断；tags.include、tags.except 按标签筛（内层交集、外层并集）",
                 "SparkConversation[]",
                 SYSTEM_OBJ,
             ),
@@ -466,6 +468,7 @@ object SparkScriptEngine {
             Doc("time", "", "当前时间 HH:mm", "string", BUILTIN_OBJ),
             Doc("weekday", "", "星期几", "string", BUILTIN_OBJ),
             Doc("timestamp", "", "当前毫秒时间戳", "number", BUILTIN_OBJ),
+            Doc("id", "", "会话 ID（与会话对象的 id 一致）", "string", IO_OBJ),
             Doc("nickname", "", "对方昵称", "string", IO_OBJ),
             Doc("remark", "", "备注名（可能为空）", "string", IO_OBJ),
             Doc("name", "", "显示名（备注优先，其次昵称）", "string", IO_OBJ),
@@ -473,7 +476,7 @@ object SparkScriptEngine {
             Doc("state", "", "火花状态码", "number", IO_OBJ),
             Doc("stateText", "", "火花状态文本", "string", IO_OBJ),
             Doc("peerUid", "", "对方 UID", "string", IO_OBJ),
-            Doc("conversationId", "", "会话 ID", "string", IO_OBJ),
+            Doc("conversationId", "", "会话 ID 的旧名，等同 id", "string", IO_OBJ),
         )
 
     /** 宿主数据（`ctx.io` 下）的键：其余变量都进 `ctx.builtin`。 */
@@ -623,10 +626,41 @@ object SparkScriptEngine {
         }
         // 会话筛选：参数可以是函数（逐项判断），也可以是对象
         //（每个键都要相等；值是数组表示「其中之一」；值是函数表示自定义判断）
+        // tags: { include, except } 是标签的两级条件：内层数组 = 交集（都要有），
+        // 外层数组 = 并集（任一组成立即可）；元素可以是标签 id 或名字
+        function __tagHit(item, tag){
+          var list = item.tags || [];
+          for (var i = 0; i < list.length; i++){
+            var t = list[i];
+            if (t && (String(t.id) === String(tag) || String(t.name) === String(tag))) return true;
+          }
+          return false;
+        }
+        function __tagGroups(value){
+          if (!value || !value.length) return [];
+          // 一维数组 = 单个交集组；二维数组 = 多个交集组取并集
+          return (typeof value[0] === "string") ? [value] : value;
+        }
+        function __matchTagGroups(item, groups){
+          var list = __tagGroups(groups);
+          if (!list.length) return true;
+          for (var i = 0; i < list.length; i++){
+            var group = list[i];
+            if (typeof group === "string") group = [group];
+            if (!group.length) return true;
+            var ok = true;
+            for (var j = 0; j < group.length; j++){
+              if (!__tagHit(item, group[j])){ ok = false; break; }
+            }
+            if (ok) return true;
+          }
+          return false;
+        }
         function __matchConversation(item, filter){
           if (!filter) return true;
           for (var key in filter){
             if (!Object.prototype.hasOwnProperty.call(filter, key)) continue;
+            if (key === "tags") continue;
             var want = filter[key];
             if (typeof want === "function"){ if (!want(item)) return false; continue; }
             var actual = item[key];
@@ -635,6 +669,12 @@ object SparkScriptEngine {
             } else if (actual !== want){
               return false;
             }
+          }
+          var tagCond = filter.tags;
+          if (tagCond && Object.prototype.toString.call(tagCond) === "[object Array]") tagCond = { include: tagCond };
+          if (tagCond){
+            if (tagCond.include && !__matchTagGroups(item, tagCond.include)) return false;
+            if (tagCond.except && __matchTagGroups(item, tagCond.except)) return false;
           }
           return true;
         }

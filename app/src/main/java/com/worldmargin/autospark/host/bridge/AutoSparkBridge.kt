@@ -174,8 +174,11 @@ object AutoSparkBridge {
             array.put(
                 JSONObject()
                     .put("id", id)
-                    .put("name", item.optString("name"))
+                    .put("nickname", item.optString("name"))
+                    .put("name", displayName(item))
                     .put("remark", item.optString("remarkName"))
+                    .put("peerUid", item.optString("peerUid"))
+                    .put("tags", tagsJson(config, id))
                     .put("days", spark?.optInt("days") ?: 0)
                     .put("state", spark?.optInt("state", -1) ?: -1)
                     .put("stateText", spark?.optString("stateText") ?: "")
@@ -239,8 +242,11 @@ object AutoSparkBridge {
                 id,
                 JSONObject()
                     .put("id", id)
-                    .put("name", item.optString("name"))
+                    .put("nickname", item.optString("name"))
+                    .put("name", displayName(item))
                     .put("remark", item.optString("remarkName"))
+                    .put("peerUid", item.optString("peerUid"))
+                    .put("tags", tagsJson(config, id))
                     .put("days", spark?.optInt("days") ?: 0)
                     .put("state", spark?.optInt("state", -1) ?: -1)
                     .put("stateText", spark?.optString("stateText") ?: "")
@@ -1099,6 +1105,7 @@ object AutoSparkBridge {
             "state" to (spark?.optInt("state", -1) ?: -1),
             "stateText" to (spark?.optString("stateText") ?: ""),
             "peerUid" to conversation.optString("peerUid"),
+            "id" to conversation.optString("conversationId"),
             "conversationId" to conversation.optString("conversationId"),
         )
     }
@@ -1106,6 +1113,18 @@ object AutoSparkBridge {
     private fun displayName(conversation: JSONObject): String {
         val remark = conversation.optString("remarkName")
         return remark.ifBlank { conversation.optString("name") }
+    }
+
+    /** 会话身上的标签：`[{id, name}]`（脚本按标签筛选 / 取列表用）。 */
+    private fun tagsJson(
+        config: SparkConfig,
+        conversationId: String,
+    ): JSONArray {
+        val array = JSONArray()
+        config.tagsOf(conversationId).forEach { tag ->
+            array.put(JSONObject().put("id", tag.id).put("name", tag.name))
+        }
+        return array
     }
 
     private fun weekday(date: Date): String {

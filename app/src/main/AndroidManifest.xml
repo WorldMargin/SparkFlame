@@ -40,6 +40,7 @@
         <activity
             android:name=".app.ui.settings.SparkSettingsActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/spark_name"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
@@ -63,6 +64,13 @@
 
         <activity
             android:name=".app.ui.conversation.ConversationEditActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 会话选择页：搜索（含标签）+ 标签筛选 + 多选 -->
+        <activity
+            android:name=".app.ui.conversation.ConversationPickerActivity"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />

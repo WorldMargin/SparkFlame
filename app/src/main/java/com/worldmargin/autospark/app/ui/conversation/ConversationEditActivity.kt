@@ -21,6 +21,7 @@ import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.app.script.PreviewData
 import com.worldmargin.autospark.app.script.TemplateVarPrelude
 import com.worldmargin.autospark.app.config.ConfigStore
+import com.worldmargin.autospark.app.ui.settings.SparkSettingsActivity
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_ACCENT
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_CARD
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_DIM
@@ -386,7 +387,70 @@ class ConversationEditActivity : Activity() {
                 )
             },
         )
+        // 标签：直接点小药丸开关，不走弹窗；只用于整理 / 筛选，不影响发送
+        val ownTags = config.conversationTags[conversationId].orEmpty()
+        info.addView(
+            row().apply {
+                setPadding(0, dp(2), 0, 0)
+                addView(text("标签", 12f, COLOR_DIM).apply { setPadding(0, 0, dp(6), 0) })
+                val shelf =
+                    android.widget.HorizontalScrollView(this@ConversationEditActivity).apply {
+                        isHorizontalScrollBarEnabled = false
+                    }
+                shelf.addView(
+                    row().apply {
+                        if (config.tags.isEmpty()) {
+                            addView(tagChipButton("＋ 新建标签", false) {
+                                openTagTab()
+                            })
+                        } else {
+                            config.tags.forEach { tag ->
+                                val on = tag.id in ownTags
+                                addView(tagChipButton(tag.name, on) {
+                                    val next = if (on) ownTags - tag.id else ownTags + tag.id
+                                    ConfigStore.update(this@ConversationEditActivity) { it.withConversationTags(conversationId, next) }
+                                    renderInfo()
+                                })
+                            }
+                        }
+                    },
+                )
+                addView(shelf, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(
+                    text("管理", 12f, COLOR_ACCENT).apply {
+                        isClickable = true
+                        setOnClickListener { openTagTab() }
+                    },
+                )
+            },
+        )
     }
+
+    /** 跳到主界面的「标签」标签页（标签管理已经与模板同级，不再是独立页面）。 */
+    private fun openTagTab() {
+        startActivity(
+            Intent(this, SparkSettingsActivity::class.java)
+                .putExtra(SparkSettingsActivity.EXTRA_TAB, SparkSettingsActivity.TAB_TAG),
+        )
+    }
+
+    /** 会话标签的小药丸：点一下开 / 关（选了用强调色，没选用灰）。 */
+    private fun tagChipButton(
+        label: String,
+        active: Boolean,
+        onClick: () -> Unit,
+    ): View =
+        text(label, 11f, if (active) COLOR_ACCENT else COLOR_DIM, bold = active).apply {
+            background = rounded(if (active) 0x223B7CFF else 0x0A000000, 10)
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = dp(4) }
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
 
     /** 底部动作条：放在编辑区下面，键盘弹出时也够得着；横向可滚动，按钮再多也不会被挤掉。 */
     private fun actionBar(): View =

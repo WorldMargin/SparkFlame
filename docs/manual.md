@@ -24,7 +24,7 @@
 
 ## 二、界面
 
-底部四个标签：**续火花 / 模板 / 宏/函数 / 设置**。列表都是**可折叠分组卡片**，点标题折叠 / 展开。
+底部五个标签：**续火花 / 模板 / 标签 / 宏/函数 / 设置**。续火花与模板页用**可折叠分组卡片**（点标题折叠 / 展开）；标签、宏/函数页是卡片列表（每条一张卡片）。
 
 ### 2.1 续火花
 
@@ -51,7 +51,7 @@
 ### 2.3 宏/函数
 
 - 顶部可**搜索**宏 / 函数名与内容。
-- 内分「宏 / 函数」两页，列表都在折叠分组卡片里；**点一行**编辑，底部按钮新增。
+- 内分「宏 / 函数」两页，列表是卡片列表（不再折叠）；**点一行**编辑，底部按钮新增。
 
 ### 2.4 设置
 
@@ -61,6 +61,22 @@
   - 手动归属：手动移入 / 移出的数量，可一键清除手动标记；
   - 宿主状态：抖音进程最近一次运行的简报（扫描、发送、失败原因），排查问题先看这里；
   - 配置：导出 / 导入（逐项勾选，导入是合并）。
+
+### 2.5 标签
+
+标签用来把会话分组（家人、同事、待续……），**只影响整理和筛选，不影响发送**。
+
+- **建标签**：底部「标签」页 → 新增标签，填名字并选颜色；点一行右侧的编辑图标可以改名 / 换色，删除会把它从所有会话上一起摘掉。
+- **标签归属在标签页里管**：点击标签卡片（卡片上写着「点击配置目标」）→ 打开会话选择页，勾选这个标签包含哪些会话（可搜索、可按来源筛，
+  确定即替换归属；取消勾选的会话会从这个标签里移除）。
+- **单个会话也能选**：进入会话编辑页，顶部「标签」一行直接点标签小药丸开 / 关（不用弹窗，点了就存）。
+- **显示与筛选**：会话列表的每一行会显示标签色块；顶部有「标签 / 来源」两排标记。
+  标签可以**多选**（选中项背景变蓝，再点取消；命中任一所选标签即显示），来源单选；
+  **按标签筛选时，命中的所选标签越多越靠前**，同分保持原顺序。
+  行内的标签色块、`继承：X` 那行也可以直接点。搜索框只搜昵称 / 备注。
+- **会话选择页**（选会话继承 / 克隆到会话）同样支持：按昵称 / 备注搜索，
+  「标签」条可多选、「来源」条按继承自哪个模板（含空白 / 未写）筛，多选后点「确定」。
+
 
 ## 三、什么时候会发
 
@@ -93,6 +109,8 @@
 - **继承 vs 克隆**：
   - **选会话继承** = 跟随该模板，父模板改了可以同步过来（编辑页勾「自动同步」就是自动跟随）；
   - **克隆到会话** = 只把当前内容复制过去，之后**跟随空白模板**（也算继承自空白）。
+  - 两个入口都会打开**会话选择页**：可按昵称 / 备注搜索，按标签（可多选）或来源筛选，多选后点「确定」；
+    取消勾选的会话会退回空白模板（自己写），已写内容保留。
 - **改某个会话的来源**：点会话行 → 「继承来源」右边的 **更改** → 二级页面按分类挑
   （空白模板 / 内置模板 / 自定义模板 / 内容固定的会话模板）。
   从别的模板切到空白模板时，**已写的文案会保留**。
@@ -213,6 +231,7 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 
 | 变量 | 类型 | 说明 |
 | --- | --- | --- |
+| `ctx.io.id` | string | 会话 ID（与会话对象的 `id` 一致） |
 | `ctx.io.nickname` | string | 对方昵称 |
 | `ctx.io.remark` | string | 备注名（可能为空） |
 | `ctx.io.name` | string | 显示名（备注优先，其次昵称） |
@@ -220,7 +239,7 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 | `ctx.io.state` | number | 火花状态码：1 今天已互动 / 2 今天还没互动 / 3 待重燃 |
 | `ctx.io.stateText` | string | 火花状态文本 |
 | `ctx.io.peerUid` | string | 对方 UID |
-| `ctx.io.conversationId` | string | 会话 ID |
+| `ctx.io.conversationId` | string | `id` 的旧名，等同 `ctx.io.id` |
 
 **`ctx.template` —— 模板变量与模板信息**
 
@@ -248,8 +267,12 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | string | 会话 id |
-| `name` / `remark` | string | 昵称 / 备注名（备注可能为空） |
+| `id` | string | 会话 id（与 `ctx.io.id` 一致） |
+| `nickname` | string | 昵称（原始昵称） |
+| `name` | string | 显示名（备注优先，其次昵称） |
+| `remark` | string | 备注名（可能为空） |
+| `peerUid` | string | 对方 UID |
+| `tags` | `Array<{ id, name }>` | 这个会话的标签列表（可以是空数组） |
 | `days` | number | 已连续聊天天数 |
 | `state` / `stateText` | number / string | 火花状态码与文本 |
 | `isGroup` | boolean | 是否群聊 |
@@ -261,18 +284,107 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 
 `getConversation(id)` 额外带 `template` / `parent` / `macros` 三块。
 
-**筛选**：参数可以是对象，也可以是函数；结果都是新数组。
+**筛选**：参数可以是对象，也可以是函数；返回类型都是 `SparkConversation[]`（新数组，不改原列表）。
+
+对象里能用的键（就是会话字段；值的写法见下表）：
+
+| 键 | 类型 | 示例 |
+| --- | --- | --- |
+| `id` | string | `{ id: "0:1:1097767269175691:2551343785182968" }` |
+| `nickname` | string | `{ nickname: "小明" }` |
+| `name` | string | `{ name: "小明" }`（显示名，备注优先） |
+| `remark` | string | `{ remark: "同事" }` |
+| `peerUid` | string | `{ peerUid: "123456" }` |
+| `days` | number | `{ days: 100 }` 或 `{ days: function (d) { return d >= 100; } }` |
+| `state` | number | `{ state: [1, 2] }`（1 已互动 / 2 待互动 / 3 待重燃） |
+| `stateText` | string | `{ stateText: "待重燃" }` |
+| `isGroup` | boolean | `{ isGroup: false }` |
+| `selected` | boolean | `{ selected: true }` |
+| `sentToday` | boolean | `{ sentToday: false }` |
+| `manualSend` | boolean | `{ manualSend: true }` |
+| `autoSend` | boolean | `{ autoSend: true }` |
+| `willSend` | boolean | `{ willSend: true }` |
+| `tags` | 对象 / 数组 | 见下（标签的两级条件） |
+
+每个字段的值都可以写成三种形式：
+
+| 值 | 含义 |
+| --- | --- |
+| 字符串 / 数字 / 布尔 | 字段必须等于这个值 |
+| 数组 | 字段等于其中任意一个 |
+| 函数 | `(字段值) => boolean`，自定义判断 |
+
+标签条件写在 `tags` 里（元素可以是标签 id，也可以是标签名）：
 
 ```js
-// 对象：每个键都要相等；值是数组表示「其中之一」；值是函数表示自定义判断
+{
+  tags: {
+    include: [[...], [...]],  // 内层数组 = 交集（组内标签都要有）；外层数组 = 并集（任一组成立即可）
+    except: [[...], [...]]    // 命中的会话被排除，语义同 include
+  }
+}
+```
+
+| 写法 | 含义 |
+| --- | --- |
+| `tags: [["家人", "同事"]]` | 同时有「家人」和「同事」 |
+| `tags: [["家人"], ["同学"]]` | 有「家人」**或**有「同学」 |
+| `tags: ["家人"]` | 一维数组 = 单个交集组，等同 `[["家人"]]` |
+| `tags: { except: [["同事"]] }` | 排除有「同事」的会话 |
+
+```js
+// 字段筛选
 var targets = ctx.system.getAllConversation({ willSend: true });
 var singles = ctx.system.getAllConversation({ isGroup: false, selected: true });
 var hot = ctx.system.getAllConversation({ state: [1, 2] });
 var longSpark = ctx.system.getAllConversation({ days: function (d) { return d >= 100; } });
 
+// 标签：同时有「家人」和「同事」，或者有「同学」
+var tagged = ctx.system.getAllConversation({ tags: { include: [["家人", "同事"], ["同学"]] } });
+// 排除有「同事」或同时有「家人」「同学」的会话
+var filtered = ctx.system.getAllConversation({ tags: { except: [["同事"], ["家人", "同学"]] } });
+
 // 函数：逐项判断
 var need = ctx.system.getAllConversation(function (c) { return c.autoSend && c.days > 30; });
 ```
+
+**`getConversation(id)` 的完整用法**
+
+传入会话 id，返回**一个**会话详情对象（就是 `getAllConversation()` 数组里的元素，再加下面三块）；找不到返回 `null`：
+
+```js
+var c = ctx.system.getConversation("0:1:1097767269175691:2551343785182968");
+
+if (c) {
+  // 基础字段（与 getAllConversation 的元素完全一致）
+  c.id;          // 会话 id（string）
+  c.nickname;    // 昵称（string）
+  c.name;        // 显示名：备注优先，其次昵称（string）
+  c.remark;      // 备注名，可能为空（string）
+  c.peerUid;     // 对方 UID（string）
+  c.tags;        // 标签列表：[{ id, name }]
+  c.days;        // 已连续聊天天数（number）
+  c.state;       // 火花状态码：1 今天已互动 / 2 今天还没互动 / 3 待重燃（number）
+  c.stateText;   // 火花状态文本（string）
+  c.isGroup;     // 是否群聊（boolean）
+  c.selected;    // 是否在「已选目标」（boolean）
+  c.sentToday;   // 今天是否已发（boolean）
+  c.manualSend;  // 手动发送会不会发它（boolean）
+  c.autoSend;    // 自动发送会不会发它（boolean）
+  c.willSend;    // 本轮实际会不会发（boolean）
+
+  // 详情额外字段（getAllConversation 没有）
+  c.template;    // 这个会话自己的模板：{ id, name, body }
+  c.parent;      // 继承来源：{ id, name, body }
+  c.macros;      // 挂在这个会话上的宏：[{ id, name }]
+}
+```
+
+| 详情字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `template` | `{ id, name, body }` | 这个会话自己的模板（空白模板时 `body` 为空串） |
+| `parent` | `{ id, name, body }` | 继承来源（`id` 可能是内置模板 id，如 `builtin:blank`） |
+| `macros` | `Array<{ id, name }>` | 挂在会话或父模板上的宏 |
 
 ### 6.4 发送结果回调：`ctx.registerCallback`
 
@@ -280,14 +392,15 @@ var need = ctx.system.getAllConversation(function (c) { return c.autoSend && c.d
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `conversationId` | string | 刚处理完的会话 id |
+| `id` | string | 刚处理完的会话 id |
+| `conversationId` | string | `id` 的旧名，等同 `id` |
 | `result` | string | `"Succeed"` 发送成功 / `"Skipped"` 跳过 / `"Failed"` 发送失败 |
 | `reason` | string? | 具体原因（跳过 / 失败时一般会有，成功时不带） |
 
 ```js
 ctx.registerCallback(function (res) {
   if (res.result === "Succeed") {
-    ctx.macro.setvar("lastSent", res.conversationId);
+    ctx.macro.setvar("lastSent", res.id);
   } else if (res.result === "Skipped") {
     ctx.macro.setvar("lastSkip", res.reason || "");   // 例如：脚本没有产出内容
   } else {
@@ -371,6 +484,7 @@ ctx.builtin.date        字符串  当天日期，yyyy-MM-dd
 ctx.builtin.time        字符串  当前时间，HH:mm
 ctx.builtin.weekday     字符串  星期几
 ctx.builtin.timestamp   数字    当前毫秒时间戳
+ctx.io.id               字符串  会话 ID（与会话对象的 id 一致）
 ctx.io.nickname         字符串  对方昵称
 ctx.io.remark           字符串  备注名（可能为空）
 ctx.io.name             字符串  显示名（备注优先，其次昵称）
@@ -378,7 +492,7 @@ ctx.io.days             数字    已连续聊天天数
 ctx.io.state            数字    火花状态码：1=今天已互动 2=今天还没互动 3=待重燃
 ctx.io.stateText        字符串  火花状态文本
 ctx.io.peerUid          字符串  对方 UID
-ctx.io.conversationId   字符串  会话 ID
+ctx.io.conversationId   字符串  id 的旧名，等同 ctx.io.id
 ctx.template.vars.<名字>  任意   模板 / 会话变量（没定义就是 null）
 
 【可用函数】

@@ -43,11 +43,18 @@ object PreviewData {
                     isGroup -> forced
                     else -> forced || selected
                 }
+            val tags = JSONArray()
+            config.tagsOf(conversationId).forEach { tag ->
+                tags.put(JSONObject().put("id", tag.id).put("name", tag.name))
+            }
             conversations.put(
                 JSONObject()
                     .put("id", conversationId)
-                    .put("name", snapshot?.name.orEmpty())
+                    .put("nickname", snapshot?.name.orEmpty())
+                    .put("name", snapshot?.displayName.orEmpty())
                     .put("remark", snapshot?.remark.orEmpty())
+                    .put("peerUid", snapshot?.peerUid.orEmpty())
+                    .put("tags", tags)
                     .put("days", snapshot?.days ?: 0)
                     .put("state", snapshot?.state ?: -1)
                     .put("stateText", snapshot?.stateText.orEmpty())

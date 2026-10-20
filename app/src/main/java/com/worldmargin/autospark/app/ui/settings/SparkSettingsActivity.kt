@@ -11,14 +11,22 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.animation.ObjectAnimator
+import android.graphics.Rect
+import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.abs
 import com.worldmargin.autospark.app.config.BuiltinTemplate
 import com.worldmargin.autospark.app.config.BuiltinTemplates
 import com.worldmargin.autospark.app.config.ConversationSnapshot
@@ -258,6 +266,7 @@ class SparkSettingsActivity : Activity() {
             }
         root.padSystemBars()
         setContentView(root)
+        installGuideBubble()
     }
 
     override fun onResume() {
@@ -354,6 +363,7 @@ class SparkSettingsActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        stopGuideBreathing()
         runCatching { unregisterReceiver(snapshotReceiver) }
     }
 
@@ -494,6 +504,10 @@ class SparkSettingsActivity : Activity() {
 
     private fun render() {
         val config = ConfigStore.load(this)
+        // 页面重建时先停掉旧控件的呼吸动画（新页面会按需重新开始）
+        stopGuideBreathing()
+        // 页面重建时关掉浮层，避免它停在旧内容上
+        guidePopup?.dismiss()
         // 二级页面（设置里的各项）在同一个 Activity 内切换，带转场动画
         val sub = subPage
         val enteringFromSub = lastRenderedSub == null && sub != null
@@ -544,6 +558,7 @@ class SparkSettingsActivity : Activity() {
             leavingSub -> page.enterFromLeft()
             else -> page.enterFromRight()
         }
+        refreshGuideBubble(config)
     }
 
     private fun openSubPage(key: String) {
@@ -629,6 +644,42 @@ class SparkSettingsActivity : Activity() {
                                 COLOR_DIM,
                             ),
                         )
+                    },
+                )
+            }
+
+            SUB_GUIDE -> {
+                val basic = basicSteps(config)
+                val advanced = advancedSteps(config)
+                body.addView(
+                    card().apply {
+                        addView(text("悬浮引导", 16f, bold = true))
+                        addView(
+                            text(
+                                "右下角胶囊可以拖动，点开是浮层、不占页面。当前基础 " +
+                                    "${basic.count { it.done }}/${basic.size} · 进阶 ${advanced.count { it.done }}/${advanced.size}。",
+                                12f,
+                                COLOR_DIM,
+                            ),
+                        )
+                    },
+                )
+                body.addView(
+                    menuRow(UiKit.Icons.LIGHTBULB, "预览引导", "打开浮层，看当前进度") {
+                        guidePreview = true
+                        ConfigStore.update(this) { it.copy(guideDismissed = false) }
+                        tab = TAB_SPARK
+                        subPage = null
+                        render()
+                        showGuidePopup()
+                    },
+                )
+                body.addView(
+                    menuRow(UiKit.Icons.CLOSE, "隐藏引导", "收起胶囊；之后都在这里重新打开") {
+                        guidePreview = false
+                        ConfigStore.update(this) { it.copy(guideDismissed = true) }
+                        subPage = null
+                        render()
                     },
                 )
             }
@@ -760,6 +811,531 @@ class SparkSettingsActivity : Activity() {
 
     // ------------------------------------------------------------------ 续火花
 
+    /** 新手引导的一步：状态、标题、提示，以及可选的「去完成」入口。 */
+    private data class GuideStep(
+        val done: Boolean,
+        val title: String,
+        val hint: String,
+        val action: String? = null,
+        /** 前面的步骤还没完成时锁住，必须先按顺序来。 */
+        val locked: Boolean = false,
+        val onClick: (() -> Unit)? = null,
+    )
+
+    /** 按顺序锁定：前一步没完成，后面的步骤都不可点。 */
+    private fun List<GuideStep>.sequential(): List<GuideStep> {
+        var blocked = false
+        return map { step ->
+            val locked = blocked
+            if (!step.done) blocked = true
+            step.copy(locked = locked)
+        }
+    }
+
+    /** 基础路线：注入、刷新、选会话、套内置模板、发出去。 */
+    private fun basicSteps(config: SparkConfig): List<GuideStep> {
+        val injected = config.hostAliveAt > 0L
+        val synced = config.snapshots.isNotEmpty()
+        val targeted = config.selectedIds().isNotEmpty() || config.snapshots.any { !it.isHidden && config.needsRenewal(it) }
+        val templated = config.conversations.any { it.inheritFrom != null && it.inheritFrom != SparkConfig.BUILTIN_BLANK }
+        val sent = config.sentDays.isNotEmpty()
+        return listOf(
+            GuideStep(injected, "模块已注入抖音", "在 LSPosed 里勾选抖音并重启，再打开抖音", "看说明") { openDocs() },
+            GuideStep(synced, "刷新出会话", "打开一次抖音，等它把会话写回来", "去刷新") {
+                tab = TAB_SETTINGS
+                render()
+                breatheGuideTarget("刷新会话")
+            },
+            GuideStep(targeted, "选中要续的会话", "把会话移进「已选目标」，或勾选后手动发送", null),
+            GuideStep(templated, "给会话套模板", "展开一个内置模板，点「选会话继承」套给会话", "去模板") {
+                openGuideTemplates()
+            },
+            GuideStep(sent, "发出去一次", "回抖音等自动发送，或在 App 内手动发送看回执", null),
+        ).sequential()
+    }
+
+    /** 进阶路线：标签、搜索、多模板、文档给 AI、自定义模板、宏。 */
+    private fun advancedSteps(config: SparkConfig): List<GuideStep> {
+        val tagged = config.tags.isNotEmpty()
+        val assigned = config.conversationTags.values.any { it.isNotEmpty() }
+        val searched = config.guideSearched
+        val distinctTemplates = config.conversations.mapNotNull { it.inheritFrom }.filter { it != SparkConfig.BUILTIN_BLANK }.distinct().size
+        val multiTemplate = distinctTemplates >= 2
+        val shared = config.guideShared
+        val customTemplate = config.groups.any { !it.id.startsWith(SparkConfig.BUILTIN_PREFIX) }
+        val hasMacro = config.macros.isNotEmpty()
+        val mounted = config.macros.any { it.appliesTo.isNotEmpty() || it.templateOnly.isNotEmpty() }
+        return listOf(
+            GuideStep(tagged, "创建标签", "在「标签」页新增一个标签，比如家人 / 同学", "去标签") {
+                tab = TAB_TAG
+                render()
+                breatheGuideTarget("新增标签")
+            },
+            GuideStep(assigned, "给会话打标签", "点标签卡片配置目标，之后可按标签筛选", "去标签页") {
+                tab = TAB_TAG
+                render()
+            },
+            GuideStep(searched, "用搜索找会话", "在续火花页顶部按昵称 / 备注搜一次", "去搜索") {
+                tab = TAB_SPARK
+                render()
+                breatheGuideTarget("guide_search")
+            },
+            GuideStep(multiTemplate, "不同会话用不同模板", "用「选会话继承」让至少两个会话继承不同的模板", "去模板") {
+                openGuideTemplates()
+            },
+            GuideStep(shared, "把文档导出 / 分享给 AI", "文档页可复制全文、导出 .md 或分享", "去文档") { openDocs() },
+            GuideStep(customTemplate, "创建自定义模板", "在「模板」页新建一个自己的模板", "去模板") {
+                tab = TAB_TEMPLATE
+                render()
+                breatheGuideTarget("新增模板")
+            },
+            GuideStep(hasMacro, "创建一个宏", "「宏/函数」页新增宏，给文案追加一句", "去宏") {
+                tab = TAB_FUNCTIONS
+                render()
+                breatheGuideTarget("新增宏")
+            },
+            GuideStep(mounted, "把宏挂到模板或会话", "编辑宏时挂载到模板或会话，发送时生效", "去挂载") {
+                tab = TAB_FUNCTIONS
+                render()
+            },
+        ).sequential()
+    }
+
+    /** 当前路线：0 基础，1 进阶。基础走完自动切到进阶。 */
+    private var guideTrack = 0
+
+    /** 模板步骤：内置模板行 / 展开后的按钮呼吸，直到用户点中。 */
+    private var guideTemplateBreathing = false
+    private var guideTrackPinned = false
+    private var guidePreview = false
+
+    /** 引导用：本进程内只写一次「用过搜索」。 */
+    private var guideSearchMarked = false
+
+    private fun markGuideSearched(query: String) {
+        if (query.isBlank() || guideSearchMarked) return
+        guideSearchMarked = true
+        ConfigStore.update(this) { it.copy(guideSearched = true) }
+    }
+
+    /**
+     * 新手引导卡片：5 步按真实状态自动打勾，不靠用户自己记。
+     *
+     * 只看本地已有数据（宿主是否上报、快照、目标、文案、发送记录），不额外请求宿主；
+     * 收起状态存进配置，设置里可以重新打开。
+     */
+    /**
+     * 新手引导卡片：基础 / 进阶两条路线，按真实状态自动打勾。
+     *
+     * 只看本地已有数据（宿主是否上报、快照、目标、模板、标签、宏、发送记录），不额外请求宿主；
+     * 收起状态存进配置，设置里可以重新打开。
+     */
+    private fun buildGuideCard(config: SparkConfig): View {
+        val basic = basicSteps(config)
+        val advanced = advancedSteps(config)
+        val basicDone = basic.count { it.done }
+        val advancedDone = advanced.count { it.done }
+        if (!guideTrackPinned && guideTrack == 0 && basicDone == basic.size && advancedDone < advanced.size) guideTrack = 1
+        val steps = if (guideTrack == 0) basic else advanced
+        val done = steps.count { it.done }
+
+        return column().apply {
+            background = rounded(COLOR_CARD, 12)
+            setPadding(dp(14), dp(11), dp(14), dp(9))
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dp(10) }
+
+            addView(
+                row().apply {
+                    addView(text("新手引导", 14f, COLOR_TEXT, bold = true))
+                    addView(spacer())
+                    addView(
+                        text("最小化", 11f, COLOR_DIM).apply {
+                            isClickable = true
+                            setOnClickListener { guidePopup?.dismiss() }
+                        },
+                    )
+                },
+            )
+
+            addView(
+                segmented(
+                    listOf("基础 $basicDone/${basic.size}", "进阶 $advancedDone/${advanced.size}"),
+                    guideTrack,
+                ) { index ->
+                    if (index == 1 && basicDone < basic.size) {
+                        Toast.makeText(this@SparkSettingsActivity, "先完成基础 ${basic.size} 步", Toast.LENGTH_SHORT).show()
+                    } else {
+                        guideTrack = index
+                        guideTrackPinned = true
+                        render()
+                    }
+                }.apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply { topMargin = dp(8) }
+                },
+            )
+
+            addView(
+                row().apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            dp(5),
+                        ).apply {
+                            topMargin = dp(8)
+                            bottomMargin = dp(4)
+                        }
+                    background = rounded(0x1A000000, 3)
+                    if (done > 0) {
+                        addView(
+                            View(this@SparkSettingsActivity).apply {
+                                layoutParams = LinearLayout.LayoutParams(0, dp(5), done.toFloat())
+                                background = rounded(COLOR_ACCENT, 3)
+                            },
+                        )
+                    }
+                    if (done < steps.size) {
+                        addView(
+                            View(this@SparkSettingsActivity).apply {
+                                layoutParams = LinearLayout.LayoutParams(0, dp(5), (steps.size - done).toFloat())
+                            },
+                        )
+                    }
+                },
+            )
+
+            steps.forEach { step ->
+                addView(
+                    row().apply {
+                        setPadding(0, dp(4), 0, dp(4))
+                        val marker = when { step.done -> "✓"; step.locked -> "·"; else -> "○" }
+                        val markerBg = when {
+                            step.done -> COLOR_ACCENT
+                            step.locked -> 0x0F000000
+                            else -> 0x1A000000
+                        }
+                        addView(
+                            text(marker, 10f, if (step.done) 0xFFFFFFFF.toInt() else COLOR_DIM, bold = true).apply {
+                                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) }
+                                gravity = android.view.Gravity.CENTER
+                                background = rounded(markerBg, 9)
+                            },
+                        )
+                        addView(
+                            column().apply {
+                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                addView(text(step.title, 12f, if (step.done || step.locked) COLOR_DIM else COLOR_TEXT, bold = !step.done && !step.locked))
+                                if (!step.done) {
+                                    addView(text(if (step.locked) "完成上一步后解锁" else step.hint, 9.5f, COLOR_DIM))
+                                }
+                            },
+                        )
+                        if (!step.done && !step.locked && step.action != null) {
+                            addView(
+                                text(step.action, 10.5f, COLOR_ACCENT).apply {
+                                    isClickable = true
+                                    setOnClickListener { step.onClick?.invoke() }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    /** 悬浮引导：右下角小胶囊，点开是浮层卡片，不占页面布局。 */
+    private var guideBubble: TextView? = null
+    private var guidePopup: PopupWindow? = null
+
+    private var bubbleDownX = 0f
+    private var bubbleDownY = 0f
+    private var bubbleStartRight = 0
+    private var bubbleStartBottom = 0
+    private var bubbleMoved = false
+
+    private fun installGuideBubble() {
+        val bubble =
+            text("引导", 12f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                background = rounded(COLOR_ACCENT, 18)
+                elevation = dp(6).toFloat()
+                isClickable = true
+                visibility = View.GONE
+                val slop = android.view.ViewConfiguration.get(this@SparkSettingsActivity).scaledTouchSlop
+                setOnTouchListener { v, event ->
+                    val lp = v.layoutParams as FrameLayout.LayoutParams
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            bubbleDownX = event.rawX
+                            bubbleDownY = event.rawY
+                            bubbleStartRight = lp.rightMargin
+                            bubbleStartBottom = lp.bottomMargin
+                            bubbleMoved = false
+                            true
+                        }
+
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = (event.rawX - bubbleDownX).toInt()
+                            val dy = (event.rawY - bubbleDownY).toInt()
+                            if (abs(dx) > slop || abs(dy) > slop) bubbleMoved = true
+                            val parent = v.parent as? View
+                            if (parent != null) {
+                                val maxRight = (parent.width - v.width - dp(4)).coerceAtLeast(dp(4))
+                                val maxBottom = (parent.height - v.height - dp(4)).coerceAtLeast(dp(4))
+                                lp.rightMargin = (bubbleStartRight - dx).coerceIn(dp(4), maxRight)
+                                lp.bottomMargin = (bubbleStartBottom - dy).coerceIn(dp(4), maxBottom)
+                                v.layoutParams = lp
+                            }
+                            true
+                        }
+
+                        MotionEvent.ACTION_UP -> {
+                            val dx = abs(event.rawX - bubbleDownX)
+                            val dy = abs(event.rawY - bubbleDownY)
+                            if (!bubbleMoved && dx < slop && dy < slop) v.performClick()
+                            true
+                        }
+
+                        MotionEvent.ACTION_CANCEL -> true
+
+                        else -> false
+                    }
+                }
+                setOnClickListener { showGuidePopup() }
+            }
+        guideBubble = bubble
+        addContentView(
+            bubble,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.END or Gravity.BOTTOM,
+            ).apply {
+                rightMargin = dp(12)
+                bottomMargin = dp(84)
+            },
+        )
+    }
+
+    /** 按当前进度刷新胶囊文字；全部完成或已收起时隐藏。 */
+    private fun refreshGuideBubble(config: SparkConfig) {
+        val bubble = guideBubble ?: return
+        val basic = basicSteps(config)
+        val advanced = advancedSteps(config)
+        val basicDone = basic.count { it.done }
+        val pending = basicDone < basic.size || advanced.any { !it.done }
+        if (!pending && !guidePreview) {
+            bubble.visibility = View.GONE
+            return
+        }
+        if (config.guideDismissed && !guidePreview) {
+            bubble.visibility = View.GONE
+            return
+        }
+        bubble.text =
+            if (basicDone < basic.size) {
+                "引导 $basicDone/${basic.size}"
+            } else {
+                "进阶 ${advanced.count { it.done }}/${advanced.size}"
+            }
+        bubble.visibility = View.VISIBLE
+    }
+
+    /** 打开浮层引导；再点一次收起。 */
+    private fun showGuidePopup() {
+        if (guidePopup?.isShowing == true) {
+            guidePopup?.dismiss()
+            return
+        }
+        val config = ConfigStore.load(this)
+        val width = minOf(dp(360), resources.displayMetrics.widthPixels - dp(24))
+        val content = buildGuideCard(config)
+        val popup = PopupWindow(content, width, LinearLayout.LayoutParams.WRAP_CONTENT, true)
+        popup.isOutsideTouchable = true
+        popup.elevation = dp(8).toFloat()
+        popup.setOnDismissListener { guidePopup = null }
+        guidePopup = popup
+
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        val popupHeight = content.measuredHeight
+        val anchor = guideBubble ?: window.decorView
+        val loc = IntArray(2)
+        anchor.getLocationOnScreen(loc)
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        val x = (loc[0] + anchor.width - width).coerceIn(dp(8), (screenWidth - width - dp(8)).coerceAtLeast(dp(8)))
+        val y =
+            (loc[1] - popupHeight - dp(8))
+                .coerceIn(dp(8), (screenHeight - popupHeight - dp(8)).coerceAtLeast(dp(8)))
+        popup.showAtLocation(window.decorView, Gravity.TOP or Gravity.START, x, y)
+    }
+
+    /** 轮换高亮：同一时刻只圈一个控件，避免多个描边叠在一起。 */
+    private var guideCycleViews: List<View> = emptyList()
+    private var guideCycleIndex = 0
+    private var guideCycleRunnable: Runnable? = null
+    private var guideRingView: View? = null
+    private var guideRingAnim: ObjectAnimator? = null
+
+    /** 从第一个开始轮流圈；单个控件时就是常亮呼吸。 */
+    private fun startGuideCycle(views: List<View>) {
+        stopGuideBreathing()
+        if (views.isEmpty()) return
+        guideCycleViews = views
+        guideCycleIndex = 0
+        // 等页面切换动画结束再量位置，否则描边会按动画中的旧坐标画偏
+        pageHost.postDelayed({ if (guideCycleViews.isNotEmpty()) showGuideRingAt(guideCycleViews[0]) }, 360)
+        views.forEach { view ->
+            view.setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) stopGuideBreathing()
+                false
+            }
+        }
+        val runnable =
+            object : Runnable {
+                override fun run() {
+                    if (guideCycleViews.isEmpty()) return
+                    guideCycleIndex = (guideCycleIndex + 1) % guideCycleViews.size
+                    showGuideRingAt(guideCycleViews[guideCycleIndex])
+                    pageHost.postDelayed(this, 1500)
+                }
+            }
+        if (views.size > 1) {
+            guideCycleRunnable = runnable
+            pageHost.postDelayed(runnable, 1860)
+        }
+    }
+
+    private fun showGuideRingAt(view: View) {
+        clearGuideRing()
+        val draw = {
+            if (view.isAttachedToWindow) {
+                val root = findViewById<ViewGroup>(android.R.id.content)
+                if (root != null) {
+                    val loc = IntArray(2)
+                    view.getLocationInWindow(loc)
+                    val rootLoc = IntArray(2)
+                    root.getLocationInWindow(rootLoc)
+                    val pad = dp(5)
+                    val ring =
+                        View(this).apply {
+                            background =
+                                android.graphics.drawable.GradientDrawable().apply {
+                                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                                    cornerRadius = dp(14).toFloat()
+                                    setStroke(dp(2), COLOR_ACCENT)
+                                }
+                            alpha = 0.25f
+                        }
+                    root.addView(
+                        ring,
+                        FrameLayout.LayoutParams(view.width + pad * 2, view.height + pad * 2).apply {
+                            leftMargin = loc[0] - rootLoc[0] - pad
+                            topMargin = loc[1] - rootLoc[1] - pad
+                        },
+                    )
+                    guideRingView = ring
+                    guideRingAnim =
+                        ObjectAnimator.ofFloat(ring, "alpha", 0.25f, 1f).apply {
+                            duration = 900
+                            repeatMode = ObjectAnimator.REVERSE
+                            repeatCount = ObjectAnimator.INFINITE
+                            start()
+                        }
+                }
+            }
+        }
+        if (view.isLaidOut) {
+            draw()
+        } else {
+            view.addOnLayoutChangeListener(
+                object : View.OnLayoutChangeListener {
+                    override fun onLayoutChange(
+                        v: View,
+                        left: Int,
+                        top: Int,
+                        right: Int,
+                        bottom: Int,
+                        oldLeft: Int,
+                        oldTop: Int,
+                        oldRight: Int,
+                        oldBottom: Int,
+                    ) {
+                        v.removeOnLayoutChangeListener(this)
+                        draw()
+                    }
+                },
+            )
+        }
+    }
+
+    private fun clearGuideRing() {
+        guideRingAnim?.cancel()
+        guideRingAnim = null
+        guideRingView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        guideRingView = null
+    }
+
+    private fun stopGuideBreathing() {
+        guideCycleRunnable?.let { pageHost.removeCallbacks(it) }
+        guideCycleRunnable = null
+        guideCycleViews.forEach { it.setOnTouchListener(null) }
+        guideCycleViews = emptyList()
+        clearGuideRing()
+    }
+
+    /** 模板步骤：展开内置模板，清掉旧展开状态；先让整行呼吸，用户展开后再闪按钮。 */
+    private fun openGuideTemplates() {
+        tab = TAB_TEMPLATE
+        builtinSectionOpen = true
+        guideTemplateBreathing = true
+        expandedTemplateId = null
+        render()
+        // 浮层点击的抬手可能落到刚切过来的行上，稍后再清一次展开状态
+        pageHost.postDelayed({
+            if (guideTemplateBreathing && expandedTemplateId != null) {
+                expandedTemplateId = null
+                render()
+            }
+        }, 260)
+    }
+
+    /** 跳到目标页后，让目标控件进入呼吸状态并滚到可见位置。 */
+    private fun breatheGuideTarget(key: String?) {
+        if (key == null) return
+        guideTemplateBreathing = false
+        val root = findViewById<ViewGroup>(android.R.id.content) ?: return
+        val target = findGuideTarget(root, key) ?: return
+        target.postDelayed({
+            target.requestRectangleOnScreen(Rect(0, 0, target.width, target.height), true)
+            startGuideCycle(listOf(target))
+        }, 180)
+    }
+
+    /** 先按 tag 找，找不到再按可见文字找（按钮多用文字标签）。 */
+    private fun findGuideTarget(view: View, key: String): View? {
+        if (!view.isShown) return null
+        if (view.tag == key) return view
+        if (view is TextView && view.text?.toString() == key) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                findGuideTarget(view.getChildAt(i), key)?.let { return it }
+            }
+        }
+        return null
+    }
+
     /** 「续火花」页：内层「已选目标 / 未选目标」两页 + 勾选后的批量移动条。 */
     private fun buildSparkPage(config: SparkConfig): View {
         // 群聊也进列表，但和单聊分成两张卡片（群聊默认不自动发送，要手动移进已选目标/勾选发送）
@@ -877,6 +1453,7 @@ class SparkSettingsActivity : Activity() {
                 val viewToId = rowViews.entries.associate { (id, view) -> view to id }
                 list.addView(searchRow("搜索昵称 / 备注", sparkQuery) { query ->
                     sparkQuery = query
+                    markGuideSearched(query)
                     applySparkFilter(query, filterables, viewToId)
                 })
                 if (config.tags.isNotEmpty()) {
@@ -1429,6 +2006,7 @@ class SparkSettingsActivity : Activity() {
         body.addView(
             searchRow("搜索模板名 / 内容", templateQuery) { query ->
                 templateQuery = query
+                markGuideSearched(query)
                 // 逐张卡片判定：搜索行不在过滤单元里，所以不会被一起藏掉
                 filterGroups(query, templateFilter)
                 templateEmpty.visibility = if (query.isNotBlank() && templateFilter.none { it.first.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
@@ -1437,10 +2015,14 @@ class SparkSettingsActivity : Activity() {
 
         run {
             val rows = mutableListOf<View>()
+            val builtinRows = mutableListOf<View>()
+            val expandedButtons = mutableListOf<View>()
             BuiltinTemplates.ALL.forEachIndexed { index, builtin ->
                 val id = SparkConfig.BUILTIN_PREFIX + builtin.id
                 val derived = config.membersOf(id).size
                 val expanded = id == expandedTemplateId
+                lateinit var builtinRow: View
+                val actionButtons = mutableListOf<View>()
                 rows +=
                     column().apply {
                         setPadding(0, dp(10), 0, dp(10))
@@ -1463,19 +2045,67 @@ class SparkSettingsActivity : Activity() {
                                 visibility = if (expanded) View.VISIBLE else View.GONE
                                 buildChildren(config, id, this)
                                 if (builtin.body.isNotBlank()) {
+                                    // 三个入口分两行，窄屏下「克隆到会话」不会被挤成竖排
+                                    val addButton =
+                                        iconButton(UiKit.Icons.NEW_FILE, "添加为我的模板", primary = true, compact = true) {
+                                            guideTemplateBreathing = false
+                                            stopGuideBreathing()
+                                            addBuiltinAsTemplate(builtin)
+                                        }
+                                    val inheritButton =
+                                        iconButton(UiKit.Icons.PERSON_ADD, "选会话继承", compact = true) {
+                                            guideTemplateBreathing = false
+                                            stopGuideBreathing()
+                                            pickMembers(id, builtin.name)
+                                        }
+                                    val cloneButton =
+                                        iconButton(UiKit.Icons.CLONE, "克隆到会话", compact = true) {
+                                            guideTemplateBreathing = false
+                                            stopGuideBreathing()
+                                            cloneBodyToConversations(builtin.name, builtin.body)
+                                        }
+                                    actionButtons += addButton
+                                    actionButtons += inheritButton
+                                    actionButtons += cloneButton
                                     addView(
-                                        row().apply {
+                                        column().apply {
                                             setPadding(0, dp(8), 0, 0)
-                                            addView(iconButton(UiKit.Icons.NEW_FILE, "添加为我的模板", primary = true, compact = true) { addBuiltinAsTemplate(builtin) })
-                                            addView(iconButton(UiKit.Icons.PERSON_ADD, "选会话继承", compact = true) { pickMembers(id, builtin.name) })
-                                            addView(iconButton(UiKit.Icons.CLONE, "克隆到会话", compact = true) { cloneBodyToConversations(builtin.name, builtin.body) })
+                                            addView(
+                                                row().apply {
+                                                    addView(addButton)
+                                                    addView(inheritButton)
+                                                },
+                                            )
+                                            addView(
+                                                row().apply {
+                                                    setPadding(0, dp(6), 0, 0)
+                                                    addView(cloneButton)
+                                                },
+                                            )
                                         },
                                     )
                                 }
                             }
                         addView(extra)
                         templateFolds[id] = extra to glyph
-                    }.asClickable { toggleTemplateFold(id) }
+                        builtinRow = this
+                    }.asClickable {
+                        val guided = guideTemplateBreathing
+                        stopGuideBreathing()
+                        toggleTemplateFold(id)
+                        if (guided) {
+                            // 等展开后的布局稳定，只圈“选会话继承”
+                            pageHost.postDelayed({
+                                if (guideTemplateBreathing) {
+                                    val root = findViewById<ViewGroup>(android.R.id.content)
+                                    val target = root?.let { findGuideTarget(it, "选会话继承") }
+                                    if (target != null) startGuideCycle(listOf(target))
+                                }
+                            }, 700)
+                        }
+                    }
+                if (builtin.id != BuiltinTemplates.BLANK.id) builtinRows += builtinRow
+                if (expanded) expandedButtons += actionButtons
             }
             body.addView(
                 sectionCard(
@@ -1486,6 +2116,13 @@ class SparkSettingsActivity : Activity() {
                     items = rows,
                 ),
             )
+            if (guideTemplateBreathing) {
+                pageHost.post {
+                    if (!guideTemplateBreathing) return@post
+                    val anyExpanded = expandedTemplateId?.startsWith(SparkConfig.BUILTIN_PREFIX) == true
+                    if (!anyExpanded) startGuideCycle(builtinRows)
+                }
+            }
         }
 
         run {
@@ -1852,7 +2489,7 @@ class SparkSettingsActivity : Activity() {
         templateName: String,
     ) {
         val config = ConfigStore.load(this)
-        if (config.snapshots.none { !it.isHidden && !it.isGroup }) {
+        if (config.snapshots.none { !it.isHidden }) {
             Toast.makeText(this, "暂无会话快照，请先刷新会话", Toast.LENGTH_SHORT).show()
             return
         }
@@ -1863,6 +2500,7 @@ class SparkSettingsActivity : Activity() {
             startActivityForResult(
                 Intent(this, ConversationPickerActivity::class.java)
                     .putExtra(ConversationPickerActivity.EXTRA_TITLE, "选择继承「${templateName.ifBlank { "(未命名)" }}」的会话")
+                    .putExtra(ConversationPickerActivity.EXTRA_ONLY_SINGLE, false)
                     .putStringArrayListExtra(ConversationPickerActivity.EXTRA_SELECTED, ArrayList(preselected)),
                 REQUEST_PICK_MEMBERS,
             )
@@ -2387,6 +3025,7 @@ class SparkSettingsActivity : Activity() {
         page.addView(
             searchRow("搜索宏 / 函数名与内容", macroQuery) { query ->
                 macroQuery = query
+                markGuideSearched(query)
                 filterGroups(query, filterables)
                 macroEmpty.visibility = if (query.isNotBlank() && rows.none { it.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
             },
@@ -2791,6 +3430,22 @@ class SparkSettingsActivity : Activity() {
                 openSubPage(SUB_HOST)
             },
         )
+        val basicList = basicSteps(config)
+        val advancedList = advancedSteps(config)
+        val basicDone = basicList.count { it.done }
+        val advancedDone = advancedList.count { it.done }
+        val guidePending = basicDone < basicList.size || advancedDone < advancedList.size
+        body.addView(
+            menuRow(
+                UiKit.Icons.LIGHTBULB,
+                "新手引导",
+                when {
+                    !guidePending -> "基础 $basicDone/${basicList.size} · 进阶 $advancedDone/${advancedList.size} · 全部完成，点这里预览"
+                    config.guideDismissed -> "已隐藏，点这里重新打开"
+                    else -> "基础 $basicDone/${basicList.size} · 进阶 $advancedDone/${advancedList.size}"
+                },
+            ) { openSubPage(SUB_GUIDE) },
+        )
         body.addView(
             menuRow(UiKit.Icons.DOWNLOAD, "配置", "导出 / 导入整份配置（换机、备份用）") {
                 openSubPage(SUB_CONFIG)
@@ -2873,6 +3528,7 @@ class SparkSettingsActivity : Activity() {
                 SUB_EXPORT to "导出配置",
                 SUB_IMPORT to "导入配置",
                 SUB_HOST to "宿主状态",
+                SUB_GUIDE to "新手引导",
                 SUB_ABOUT to "关于",
             )
 
@@ -2896,6 +3552,7 @@ class SparkSettingsActivity : Activity() {
         const val SUB_EXPORT = "export"
         const val SUB_IMPORT = "import"
         const val SUB_HOST = "host"
+        const val SUB_GUIDE = "guide"
         const val SUB_ABOUT = "about"
 
         /** 手动发送等回执的超时（抖音没运行时不至于一直等）。 */

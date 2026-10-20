@@ -109,15 +109,9 @@ data class UserFunction(
     /**
      * 完整函数声明。
      *
-     * 新数据 [body] 本身就是 `function 名字(形参) { … }`；早期版本只存「函数内部」，
-     * 这里按名字与形参补一层包装，老配置打开后照样能编辑。
+     * [body] 就是完整函数声明 `function 名字(形参) { … }`。
      */
-    fun declaration(): String =
-        if (SparkFunctionSource.looksLikeDeclaration(body)) {
-            body.trim()
-        } else {
-            SparkFunctionSource.wrapLegacy(name, params, body)
-        }
+    fun declaration(): String = body.trim()
 }
 
 /**
@@ -195,11 +189,6 @@ data class SparkTag(
 
 data class SparkConfig(
     val enabled: Boolean = false,
-    /**
-     * 旧字段：早期版本用「默认模板」给没单独设置的会话兜底。
-     * 现在默认是空白模板（没选模板就不发），这个字段只为兼容老配置保留。
-     */
-    val defaultGroupId: String? = null,
     val groups: List<TemplateGroup> = emptyList(),
     val conversations: List<ConversationTemplate> = emptyList(),
     val sentDays: Map<String, String> = emptyMap(),
@@ -226,6 +215,12 @@ data class SparkConfig(
     val hostNoteAt: Long = 0L,
     /** 宿主（抖音进程）最近一次响应指令的时间戳：界面用它判断抖音是否在运行。 */
     val hostAliveAt: Long = 0L,
+    /** 新手引导卡片是否已收起（只影响提示，不影响功能）。 */
+    val guideDismissed: Boolean = false,
+    /** 引导用：是否用过搜索。 */
+    val guideSearched: Boolean = false,
+    /** 引导用：是否用过文档的复制 / 导出 / 分享。 */
+    val guideShared: Boolean = false,
 ) {
     fun group(id: String?): TemplateGroup? = groups.firstOrNull { it.id == id }
 
@@ -796,7 +791,6 @@ object TemplateOps {
 /** JSON 序列化（配置文件的读写格式）。 */
 object ConfigCodec {
     private const val KEY_ENABLED = "enabled"
-    private const val KEY_DEFAULT_GROUP = "defaultGroupId"
     private const val KEY_GROUPS = "groups"
     private const val KEY_CONVERSATIONS = "conversations"
     private const val KEY_SENT_DAYS = "sentDays"
@@ -806,6 +800,9 @@ object ConfigCodec {
     private const val KEY_HOST_NOTE = "hostNote"
     private const val KEY_HOST_NOTE_AT = "hostNoteAt"
     private const val KEY_HOST_ALIVE_AT = "hostAliveAt"
+    private const val KEY_GUIDE_DISMISSED = "guideDismissed"
+    private const val KEY_GUIDE_SEARCHED = "guideSearched"
+    private const val KEY_GUIDE_SHARED = "guideShared"
     private const val KEY_MACROS = "macros"
     private const val KEY_FUNCTIONS = "functions"
     private const val KEY_TAGS = "tags"
@@ -974,6 +971,9 @@ object ConfigCodec {
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
             .put(KEY_HOST_ALIVE_AT, config.hostAliveAt)
+            .put(KEY_GUIDE_DISMISSED, config.guideDismissed)
+            .put(KEY_GUIDE_SEARCHED, config.guideSearched)
+            .put(KEY_GUIDE_SHARED, config.guideShared)
             .toString()
     }
 
@@ -1121,7 +1121,6 @@ object ConfigCodec {
 
         return SparkConfig(
             enabled = root.optBoolean(KEY_ENABLED),
-            defaultGroupId = root.optString(KEY_DEFAULT_GROUP).takeIf { it.isNotEmpty() && it != "null" },
             groups = groups,
             conversations = conversations,
             sentDays = sentDays,
@@ -1136,6 +1135,9 @@ object ConfigCodec {
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),
             hostAliveAt = root.optLong(KEY_HOST_ALIVE_AT),
+            guideDismissed = root.optBoolean(KEY_GUIDE_DISMISSED),
+            guideSearched = root.optBoolean(KEY_GUIDE_SEARCHED),
+            guideShared = root.optBoolean(KEY_GUIDE_SHARED),
         )
     }
 

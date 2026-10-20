@@ -27,8 +27,7 @@ class EmptyResultException(
 /**
  * 动态文案脚本引擎（Rhino JS 沙盒）。
  *
- * 宿主把上下文挂到沙盒里的 `ctx` 上，脚本把要发送的文本 push 进 `ctx.result`
- *（老写法 [RESULT_VAR] `$spark_result$` 仍然可用，两者是同一个数组），
+ * 宿主把上下文挂到沙盒里的 `ctx` 上，脚本把要发送的文本 push 进 `ctx.result`，
  * 引擎只读这个列表（不会去取「最后一个表达式」的值）。
  *
  * `ctx` 下面按来源分命名空间：
@@ -49,17 +48,11 @@ object SparkScriptEngine {
     /** 成员访问前缀，如 `ctx.`。 */
     const val CTX_DOT = "$CTX."
 
-    /** 脚本约定的输出变量名：脚本给它赋值，引擎读它。 */
-    const val RESULT_VAR = "\$spark_result\$"
-
-    /** 输出列表的新写法：`ctx.result`（和 [RESULT_VAR] 是同一个数组，两种写法都认）。 */
+    /** 输出列表：`ctx.result`，脚本往里 push 文本。 */
     const val RESULT_OBJ = "result"
 
     /** 会话结果回调用法：`ctx.registerCallback((res) => { ... })`。 */
     const val CALLBACK_FN = "registerCallback"
-
-    /** [CALLBACK_FN] 的旧拼写（早期文档里写成 registCallback，保留兼容）。 */
-    const val CALLBACK_FN_ALIAS = "registCallback"
 
     /** 回调结果：发送成功。 */
     const val SEND_SUCCEED = "Succeed"
@@ -240,25 +233,22 @@ object SparkScriptEngine {
 
             cx.evaluateString(scope, MACROS, "macros", 1, null)
 
-            // 结果统一按**列表**初始化：脚本用 `ctx.result.push("…")` 或
-            // `$spark_result$.push("…")` 逐行添加（两者是同一个数组）。
+            // 结果统一按**列表**初始化：脚本用 `ctx.result.push("…")` 逐行添加。
             // 隐式赋值建立的是可配置的全局属性，用户随后写 var / let / const 也不会重声明报错。
             // 直接赋字符串（`ctx.result = "…"`）同样接受，[flatten] 会把它当一行处理。
             // 开头的 `;` 很关键：脚本以 `)` / `]` 结尾且没写分号时，
             // 下一行以 `(` 开头会被 ASI 当成连续调用（push(..)(..) → 数字不是函数）
             val program =
-                "$RESULT_VAR = [];\n" +
-                    "$CTX.$RESULT_OBJ = $RESULT_VAR;\n" +
-                    "__sb.result0 = $RESULT_VAR;\n" +
+                "$CTX.$RESULT_OBJ = [];\n" +
+                    "__sb.result0 = $CTX.$RESULT_OBJ;\n" +
                     script +
                     "\n;\n" +
                     "__sparkSyncResult();\n" +
                     "(typeof $CTX.$RESULT_OBJ === 'undefined' || $CTX.$RESULT_OBJ == null)" +
-                    " ? ((typeof $RESULT_VAR === 'undefined' || $RESULT_VAR == null) ? undefined : $RESULT_VAR)" +
-                    " : $CTX.$RESULT_OBJ;"
+                    " ? undefined : $CTX.$RESULT_OBJ;"
             val result = cx.evaluateString(scope, program, "autospark", 1, null)
             if (result == null || result == Scriptable.NOT_FOUND || result == Undefined.instance) {
-                throw IllegalStateException("脚本没有给 ctx.result（或 $RESULT_VAR）赋值")
+                throw IllegalStateException("脚本没有给 ctx.result 赋值")
             }
             val text = flatten(result).trim()
             val changes = collectChanges(cx, scope)
@@ -332,7 +322,7 @@ object SparkScriptEngine {
     private fun org.json.JSONArray?.orEmptyLength(): Int = this?.length() ?: 0
 
     /**
-     * 发送结束后触发脚本注册的会话结果回调，参数是 `{conversationId, result, reason?}`。
+     * 发送结束后触发脚本注册的会话结果回调，参数是 `{id, result, reason?}`。
      *
      * [result] 取 [SEND_SUCCEED] / [SEND_SKIPPED] / [SEND_FAILED]；[reason] 有具体原因时才带。
      * 回调里对沙盒 / 宏的改动会重新收集一遍返回（和渲染时收集的有重复，
@@ -354,9 +344,7 @@ object SparkScriptEngine {
             cx.setClassShutter(denyJava)
             cx.instructionObserverThreshold = OBSERVER_THRESHOLD
             val argument = cx.newObject(scope)
-            // 统一用 id；conversationId 是同一值的旧名，保留兼容
             ScriptableObject.putProperty(argument, "id", conversationId)
-            ScriptableObject.putProperty(argument, "conversationId", conversationId)
             ScriptableObject.putProperty(argument, "result", result)
             if (reason.isNotBlank()) ScriptableObject.putProperty(argument, "reason", reason)
             callbacks.forEach { callback ->
@@ -476,7 +464,6 @@ object SparkScriptEngine {
             Doc("state", "", "火花状态码", "number", IO_OBJ),
             Doc("stateText", "", "火花状态文本", "string", IO_OBJ),
             Doc("peerUid", "", "对方 UID", "string", IO_OBJ),
-            Doc("conversationId", "", "会话 ID 的旧名，等同 id", "string", IO_OBJ),
         )
 
     /** 宿主数据（`ctx.io` 下）的键：其余变量都进 `ctx.builtin`。 */
@@ -587,17 +574,13 @@ object SparkScriptEngine {
           ctx.macro.name = isMacro ? (__sb.names[__sb.macroId] || "") : "";
         }
 
-        // 结果列表：老写法 ${'$'}spark_result${'$'} 与新写法 ctx.result 指向同一个数组。
-        // 宏执行前、程序结束时各同步一次（脚本可能把其中一个换成了字符串或新数组）。
+        // 结果列表：宏执行前、程序结束时各同步一次（脚本可能把列表换成了字符串或新数组）。
         function __sparkSyncResult(){
-          var initial = __sb.result0;
-          var old = ${'$'}spark_result${'$'}, api = ctx.result, chosen;
-          if (old !== initial && old !== undefined && old !== null) chosen = old;
-          else if (api !== initial && api !== undefined && api !== null) chosen = api;
-          else chosen = (old !== undefined && old !== null) ? old : api;
+          var initial = __sb.result0, api = ctx.result, chosen;
+          if (api !== initial && api !== undefined && api !== null) chosen = api;
+          else chosen = api;
           if (typeof chosen === "string") chosen = [chosen];
           if (Object.prototype.toString.call(chosen) !== "[object Array]") chosen = [chosen];
-          ${'$'}spark_result${'$'} = chosen;
           ctx.result = chosen;
           __sb.result0 = chosen;
         }
@@ -705,13 +688,12 @@ object SparkScriptEngine {
           }
         };
 
-        // 会话结果回调：脚本注册，宿主在「这个会话发送结束」后调用，参数 {conversationId, success}
+        // 会话结果回调：脚本注册，宿主在「这个会话发送结束」后调用，参数 {id, result, reason}
         function __registCallback(fn){
           if (typeof fn !== "function") throw new Error("ctx.registerCallback 需要一个函数");
           if (__sb.preview) return;
           __sb.callbacks.push(fn);
         }
         ctx.registerCallback = __registCallback;
-        ctx.registCallback = __registCallback;
         """.trimIndent()
 }

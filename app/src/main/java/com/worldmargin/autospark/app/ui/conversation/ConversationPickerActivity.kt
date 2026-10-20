@@ -15,13 +15,16 @@ import com.worldmargin.autospark.app.config.SparkConfig
 import com.worldmargin.autospark.app.ui.common.UiKit
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_ACCENT
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_BG
+import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_CARD
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_DIM
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_TEXT
+import com.worldmargin.autospark.app.ui.common.UiKit.animateFold
 import com.worldmargin.autospark.app.ui.common.UiKit.bottomBar
 import com.worldmargin.autospark.app.ui.common.UiKit.column
 import com.worldmargin.autospark.app.ui.common.UiKit.divider
 import com.worldmargin.autospark.app.ui.common.UiKit.dp
 import com.worldmargin.autospark.app.ui.common.UiKit.flatRow
+import com.worldmargin.autospark.app.ui.common.UiKit.icon
 import com.worldmargin.autospark.app.ui.common.UiKit.iconButton
 import com.worldmargin.autospark.app.ui.common.UiKit.padSystemBars
 import com.worldmargin.autospark.app.ui.common.UiKit.rounded
@@ -59,6 +62,11 @@ class ConversationPickerActivity : Activity() {
     private val tagFilters = linkedSetOf<String>()
     private var sourceFilter: String? = null
     private var onlySingle = true
+    /** 0 全部 / 1 已选中 / 2 未选中 */
+    private var selectedFilter = 0
+    private lateinit var selectedHost: LinearLayout
+    private var singleCollapsed = false
+    private var groupCollapsed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +74,7 @@ class ConversationPickerActivity : Activity() {
         intent.getStringArrayListExtra(EXTRA_SELECTED)?.forEach { if (it.isNotBlank()) selected += it }
 
         listHost = column()
+        selectedHost = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         tagsHost = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         sourcesHost = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         confirmLabel = text(confirmText(), 14f, COLOR_ACCENT, bold = true).apply {
@@ -89,6 +98,12 @@ class ConversationPickerActivity : Activity() {
                             query = value
                             refreshList()
                         })
+                        addView(
+                            HorizontalScrollView(this@ConversationPickerActivity).apply {
+                                isHorizontalScrollBarEnabled = false
+                                addView(selectedHost)
+                            },
+                        )
                         if (ConfigStore.load(this@ConversationPickerActivity).tags.isNotEmpty()) {
                             addView(
                                 HorizontalScrollView(this@ConversationPickerActivity).apply {
@@ -148,6 +163,9 @@ class ConversationPickerActivity : Activity() {
     private fun confirmText(): String = "确定 ${selected.size}"
 
     /** 当前搜索 / 标签 / 来源条件下可见的会话（已隐藏的永远不出现）。 */
+    /** 续火花页里的「已选目标」：自动判定的 target + 手动移入的 target。 */
+    private fun outerTargets(config: SparkConfig): Set<String> = config.selectedIds() + config.forcedRenew
+
     private fun visible(): List<ConversationSnapshot> {
         val config = ConfigStore.load(this)
         // 标签可能在别的页面被删了：筛选项跟着失效，避免列表被筛成空
@@ -155,7 +173,16 @@ class ConversationPickerActivity : Activity() {
         val needle = query.trim()
         val rows =
             config.snapshots
-                .filter { !it.isHidden && (!onlySingle || !it.isGroup) }
+                .filter { !it.isHidden }
+                .filter { !onlySingle || !it.isGroup }
+                .filter {
+                    val isTarget = it.conversationId in outerTargets(config)
+                    when (selectedFilter) {
+                        1 -> isTarget
+                        2 -> !isTarget
+                        else -> true
+                    }
+                }
                 .filter { snapshot ->
                     val tags = config.tagsOf(snapshot.conversationId)
                     // 多选标签取并集：命中任意一个即可
@@ -186,15 +213,86 @@ class ConversationPickerActivity : Activity() {
             listHost.addView(text("没有符合条件的会话（试试换个关键字或标签）", 13f, COLOR_DIM))
             return
         }
+        val config = ConfigStore.load(this)
+        // 已选优先 → 命中的标签越多越靠前 → 火花天数多的靠前 → 名称兜底
+        val targets = outerTargets(config)
+        val sorted =
+            rows.sortedWith(
+                compareByDescending<ConversationSnapshot> { it.conversationId in targets }
+                    .thenByDescending { snapshot -> config.tagsOf(snapshot.conversationId).count { it.id in tagFilters } }
+                    .thenByDescending { it.days }
+                    .thenBy { it.displayName },
+            )
         listHost.addView(
-            text("共 ${rows.size} 个会话，点行多选；标签在“标签”页维护", 12f, COLOR_DIM).apply {
+            text("共 ${sorted.size} 个 · 已勾选 ${selected.size}；续火花页的已选目标和标签命中排在前面", 12f, COLOR_DIM).apply {
                 setPadding(0, dp(4), 0, dp(4))
             },
         )
-        val config = ConfigStore.load(this)
-        rows.forEach { snapshot ->
-            listHost.addView(rowFor(config, snapshot))
+        val singles = sorted.filterNot { it.isGroup }
+        val groups = sorted.filter { it.isGroup }
+        if (singles.isNotEmpty()) {
+            listHost.addView(
+                sectionCard("单聊", singles.size, singleCollapsed, singles.map { rowFor(config, it) }) { expanded ->
+                    singleCollapsed = !expanded
+                },
+            )
         }
+        if (groups.isNotEmpty()) {
+            listHost.addView(
+                sectionCard("群聊", groups.size, groupCollapsed, groups.map { rowFor(config, it) }) { expanded ->
+                    groupCollapsed = !expanded
+                },
+            )
+        }
+    }
+
+    /** 一张卡片装下一组：标题 + 会话行；折叠时只剩标题，展开/收起带高度过渡。 */
+    private fun sectionCard(
+        name: String,
+        count: Int,
+        collapsed: Boolean,
+        rows: List<View>,
+        onToggleState: (Boolean) -> Unit,
+    ): View {
+        val chevron = icon(if (collapsed) UiKit.Icons.UNFOLD else UiKit.Icons.FOLD, 14f, COLOR_DIM)
+        val actionLabel = text(if (collapsed) "展开" else "折叠", 11f, COLOR_DIM)
+        val body =
+            column().apply {
+                visibility = if (collapsed) View.GONE else View.VISIBLE
+                rows.forEach { addView(it) }
+            }
+        val card =
+            column().apply {
+                background = rounded(COLOR_CARD, 12)
+                setPadding(dp(12), dp(2), dp(12), dp(2))
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        topMargin = dp(8)
+                        bottomMargin = dp(4)
+                    }
+            }
+        val header =
+            row().apply {
+                setPadding(0, dp(8), 0, dp(8))
+                addView(chevron.apply { setPadding(0, 0, dp(6), 0) })
+                addView(text(name, 14f, COLOR_TEXT, bold = true))
+                addView(text(" $count", 12f, COLOR_DIM))
+                addView(spacer())
+                addView(actionLabel)
+                isClickable = true
+                setOnClickListener {
+                    val expand = body.visibility != View.VISIBLE
+                    onToggleState(expand)
+                    actionLabel.text = if (expand) "折叠" else "展开"
+                    animateFold(body, expand, chevron)
+                }
+            }
+        card.addView(header)
+        card.addView(body)
+        return card
     }
 
     private fun rowFor(
@@ -258,6 +356,14 @@ class ConversationPickerActivity : Activity() {
     /** 两行标记筛选：标签（彩色）+ 继承来源（灰）。 */
     private fun refreshChips() {
         val config = ConfigStore.load(this)
+        selectedHost.removeAllViews()
+        listOf("全部" to 0, "已选目标" to 1, "未选目标" to 2).forEach { (label, value) ->
+            selectedHost.addView(chip(label, selectedFilter == value) {
+                selectedFilter = value
+                refreshChips()
+                refreshList()
+            })
+        }
         tagsHost.removeAllViews()
         if (config.tags.isNotEmpty()) {
             tagsHost.addView(chip("全部", tagFilters.isEmpty()) {

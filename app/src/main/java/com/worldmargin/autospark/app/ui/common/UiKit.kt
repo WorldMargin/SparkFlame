@@ -256,6 +256,8 @@ object UiKit {
                     background = null
                     setPadding(0, dp(8), 0, dp(8))
                     imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                    // 新手引导跳过来时用它找到输入框做高亮
+                    tag = "guide_search"
                     layoutParams =
                         LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }

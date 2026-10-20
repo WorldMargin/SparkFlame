@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.LinearLayout
 import android.widget.Toast
+import com.worldmargin.autospark.app.config.ConfigStore
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_DIM
 import com.worldmargin.autospark.app.ui.common.UiKit.button
 import com.worldmargin.autospark.app.ui.common.UiKit.column
@@ -71,7 +72,13 @@ class DocsActivity : Activity() {
     private fun copyAll() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 使用文档", markdown))
+        markShared()
         Toast.makeText(this, "已复制全文，可以贴给 AI 了", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 引导用：复制 / 导出 / 分享任一动作都算「把文档交给 AI」。 */
+    private fun markShared() {
+        runCatching { ConfigStore.update(this) { it.copy(guideShared = true) } }
     }
 
     /** 走系统的「新建文件」流程导出 Markdown，方便传给 AI 或存到电脑上。 */
@@ -82,6 +89,7 @@ class DocsActivity : Activity() {
                 .setType("text/markdown")
                 .putExtra(Intent.EXTRA_TITLE, FILE_NAME)
         runCatching { startActivityForResult(intent, REQUEST_EXPORT) }
+            .onSuccess { markShared() }
             .onFailure { Toast.makeText(this, "没有可用的文件管理器", Toast.LENGTH_SHORT).show() }
     }
 
@@ -92,6 +100,7 @@ class DocsActivity : Activity() {
                 .putExtra(Intent.EXTRA_SUBJECT, "星火燎原 使用文档")
                 .putExtra(Intent.EXTRA_TEXT, markdown)
         runCatching { startActivity(Intent.createChooser(intent, "分享使用文档")) }
+            .onSuccess { markShared() }
             .onFailure { Toast.makeText(this, "没有可分享的应用", Toast.LENGTH_SHORT).show() }
     }
 

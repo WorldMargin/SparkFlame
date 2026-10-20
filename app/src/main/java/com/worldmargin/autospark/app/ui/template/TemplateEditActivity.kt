@@ -437,8 +437,7 @@ class TemplateEditActivity : Activity() {
                     config.copy(
                         groups = config.groups.filterNot { it.id == groupId },
                         conversations = conversations,
-                        defaultGroupId = config.defaultGroupId.takeIf { it != groupId },
-                    )
+                                )
                 }
                 finish()
             }

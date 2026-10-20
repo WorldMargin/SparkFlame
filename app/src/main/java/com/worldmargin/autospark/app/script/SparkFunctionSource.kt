@@ -67,19 +67,6 @@ object SparkFunctionSource {
         return Result(Parsed(name, params, normalized))
     }
 
-    /**
-     * 老数据兼容：早期版本只存「函数内部」，这里按名字与形参包成完整声明，
-     * 让用户打开时看到的就是可以直接编辑的函数声明。
-     */
-    fun wrapLegacy(
-        name: String,
-        params: String,
-        body: String,
-    ): String = "function $name($params) {\n$body\n}"
-
-    /** 文本是否已经是完整声明（老数据是纯函数体时返回 false）。 */
-    fun looksLikeDeclaration(text: String): Boolean = HEAD.containsMatchIn(text.trim())
-
     /** 从 [open] 处配对括号，跳过字符串与注释；找不到返回 null。 */
     private fun matchPair(
         text: String,

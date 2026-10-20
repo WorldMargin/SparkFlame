@@ -23,6 +23,24 @@ object BuiltinTemplates {
             body = "",
         )
 
+    /** 固定一句「续火花」，最短的打卡。 */
+    val SPARK =
+        BuiltinTemplate(
+            id = "spark",
+            name = "续火花",
+            desc = "固定内容：续火花",
+            body = """ctx.result.push("续火花");""",
+        )
+
+    /** 抖音的「续火花吧」表情包，固定发这一条。 */
+    val SPARK_EMOJI =
+        BuiltinTemplate(
+            id = "spark_emoji",
+            name = "[续火花吧]",
+            desc = "固定内容：抖音续火花表情包",
+            body = """ctx.result.push("[续火花吧]");""",
+        )
+
     /** 按时间选招呼语，凌晨不说早安。 */
     val GREETING =
         BuiltinTemplate(
@@ -33,7 +51,7 @@ object BuiltinTemplates {
                 """var who = ctx.io.name || "朋友";
 var hour = parseInt(ctx.builtin.time.split(":")[0], 10);
 var hi = hour < 5 ? "夜深了" : hour < 11 ? "早安" : hour < 14 ? "午安" : hour < 18 ? "下午好" : hour < 23 ? "晚上好" : "夜深了";
-${'$'}spark_result${'$'}.push(ctx.builtin.pick([
+ctx.result.push(ctx.builtin.pick([
   hi + "～" + who + "，今天也要记得续火花哦",
   "火花打卡 " + ctx.builtin.date + "：" + who + "，已经 " + ctx.io.days + " 天啦",
   "滴——" + who + "，第 " + ctx.io.days + " 天的火花，别让它灭了"
@@ -48,7 +66,7 @@ ${'$'}spark_result${'$'}.push(ctx.builtin.pick([
             desc = "带上已连续天数与当天日期",
             body =
                 """var who = ctx.io.name || "朋友";
-${'$'}spark_result${'$'}.push("火花打卡 " + ctx.builtin.date + "：" + who + "，已经 " + ctx.io.days + " 天啦");""",
+ctx.result.push("火花打卡 " + ctx.builtin.date + "：" + who + "，已经 " + ctx.io.days + " 天啦");""",
         )
 
     /** 最短的一句话提醒。 */
@@ -59,14 +77,14 @@ ${'$'}spark_result${'$'}.push("火花打卡 " + ctx.builtin.date + "：" + who +
             desc = "一两句短提醒，不啰嗦",
             body =
                 """var who = ctx.io.name || "朋友";
-${'$'}spark_result${'$'}.push(ctx.builtin.pick([
+ctx.result.push(ctx.builtin.pick([
   who + "，滴——打卡啦",
   who + "，别忘了咱们的火花～",
   who + "，今天也来续一下火花吧"
 ]));""",
         )
 
-    val ALL = listOf(BLANK, GREETING, STREAK, REMIND)
+    val ALL = listOf(BLANK, SPARK, SPARK_EMOJI, GREETING, STREAK, REMIND)
 
     fun byId(id: String): BuiltinTemplate? = ALL.firstOrNull { it.id == id }
 }

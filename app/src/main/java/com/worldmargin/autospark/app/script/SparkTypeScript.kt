@@ -16,7 +16,6 @@ import com.worldmargin.autospark.app.config.UserFunction
  */
 object SparkTypeScript {
     /** 旧写法：脚本结果变量。新脚本用 `ctx.result`，这里保留声明只为兼容老脚本。 */
-    private const val RESULT_DECL = "declare var \$spark_result\$: string[];"
 
     fun dts(
         config: SparkConfig,
@@ -24,7 +23,6 @@ object SparkTypeScript {
     ): String {
         val builder = StringBuilder()
         builder.append("// 由模块生成：上下文对象与自定义函数声明\n")
-        builder.append(RESULT_DECL).append('\n')
         builder.append("interface SparkFunctions {\n")
         config.functions.forEach { function ->
             builder.append("\t/** ").append(escape(function.desc.ifBlank { "自定义函数" })).append(" */\n")
@@ -154,8 +152,6 @@ object SparkTypeScript {
         builder.append("interface SparkSendReport {\n")
         builder.append("\t/** 刚处理完的会话 id */\n")
         builder.append("\tid: string;\n")
-        builder.append("\t/** id 的旧名，等同 id */\n")
-        builder.append("\tconversationId: string;\n")
         builder.append("\t/** 结果：Succeed / Skipped / Failed */\n")
         builder.append("\tresult: SparkSendOutcome;\n")
         builder.append("\t/** 具体原因（跳过 / 失败时一般会有） */\n")
@@ -169,12 +165,10 @@ object SparkTypeScript {
         }
         builder.append("}\n")
         builder.append("interface SparkCtx {\n")
-        builder.append("\t/** 要发送的文案：逐行 push，空列表 = 不发（老写法 \$spark_result\$ 仍然可用） */\n")
+        builder.append("\t/** 要发送的文案：逐行 push，空列表 = 不发 */\n")
         builder.append("\tresult: string[];\n")
-        builder.append("\t/** 注册会话结果回调：发送结束后调用，参数是 { id, result, reason? }（conversationId 是旧名） */\n")
+        builder.append("\t/** 注册会话结果回调：发送结束后调用，参数是 { id, result, reason? } */\n")
         builder.append("\tregisterCallback(callback: (report: SparkSendReport) => void): void;\n")
-        builder.append("\t/** registerCallback 的旧拼写（兼容） */\n")
-        builder.append("\tregistCallback(callback: (report: SparkSendReport) => void): void;\n")
         builder.append("\t/** 内置能力：日期时间 + 内置函数 */\n")
         builder.append("\tbuiltin: SparkBuiltin;\n")
         builder.append("\t/** 宿主数据：抖音给的会话信息 */\n")

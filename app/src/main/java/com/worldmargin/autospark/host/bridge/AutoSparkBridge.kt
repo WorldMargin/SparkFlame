@@ -527,7 +527,7 @@ object AutoSparkBridge {
         targets: List<String>,
         toast: Boolean = false,
     ) {
-        wakeModule(context, hint = true)
+        wakeModule(context)
         val summary = runRenew(context, respectEnabled = false, only = targets.toSet(), ignoreSentToday = true)
         // 发完把快照写回模块 App：不用打开 App 也能看到最新状态与已发记录
         pushSnapshotToModule(context, attempts = 2)
@@ -591,10 +591,7 @@ object AutoSparkBridge {
      * （`adb install` 覆盖安装、`am force-stop` 之后都是）时广播会被丢掉，
      * 这时改用启动一个透明空页面把进程拉起来（停用状态下只有启动 Activity 才管用）。
      */
-    private fun wakeModule(
-        context: Context,
-        hint: Boolean = false,
-    ) {
+    private fun wakeModule(context: Context) {
         ConfigClient.touchHost(context, System.currentTimeMillis())
         runCatching {
             context.sendBroadcast(
@@ -605,18 +602,44 @@ object AutoSparkBridge {
         }.onFailure { ModLog.e("唤醒模块进程失败", it) }
         Thread.sleep(WAKE_WAIT_MS)
         if (ConfigClient.read(context) != null) return
-        // 广播叫不醒（模块 App 处于「已停用」状态，常见于覆盖安装 / force-stop 之后）。
-        // 这里**不能**再 startActivity：Android 10+ 会拦截后台启动，部分机型直接弹「是否跳转到 XX」，
-        // 而且每次抖音回前台都会再来一次。改成提示用户手动打开一次。
-        if (hint && wakeHinted.compareAndSet(false, true)) {
-            ModLog.w("模块进程未唤醒：请在桌面打开一次星火燎原")
-            com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：请先打开一次模块 App）")
+        // 只有确认模块 App 处于「停用」状态才提示；进程忙、IM 未就绪等其它原因不打扰
+        if (!isModuleStopped(context)) {
+            ModLog.w("模块配置不可读：模块 App 仍在运行，只是这一轮没读到")
+            return
         }
+        ModLog.w("模块 App 处于停用状态，配置不可读")
+        val today = dayFormat.format(Date())
+        // 今天已经自动跑过就不用提示（没有要发的东西）
+        if (lastRunDay(context) == today) return
+        hintModuleStoppedOncePerDay(context, today)
+    }
+
+    /** 模块 App 是否被系统置为「停用」（覆盖安装 / force-stop 之后）。 */
+    private fun isModuleStopped(context: Context): Boolean =
+        runCatching {
+            val flags = context.packageManager.getApplicationInfo(MODULE_PACKAGE, 0).flags
+            (flags and android.content.pm.ApplicationInfo.FLAG_STOPPED) != 0
+        }.getOrDefault(false)
+
+    private fun stoppedHintDayFile(context: Context) = java.io.File(context.filesDir, "spark_module_stopped_hint_day")
+
+    /** 确认停用后，提示用户打开一次；每天最多一次，避免反复打扰。 */
+    private fun hintModuleStoppedOncePerDay(
+        context: Context,
+        today: String,
+    ) {
+        val file = stoppedHintDayFile(context)
+        if (runCatching { file.readText().trim() }.getOrDefault("") == today) return
+        runCatching { file.writeText(today) }
+        com.worldmargin.autospark.core.DouToastHelper.show(
+            context,
+            "（星火燎原：模块 App 被系统停用，请打开一次）",
+        )
     }
 
     /** 手动刷新一次并通知界面（广播接收线程）。 */
     private fun refreshAndNotify(context: Context) {
-        wakeModule(context, hint = true)
+        wakeModule(context)
         val outcome = refreshSnapshot(context)
         HostTrace.add(context, if (outcome.ok) "手动刷新成功：${outcome.detail}" else "手动刷新失败：${outcome.detail}")
         if (!outcome.ok) return
@@ -641,15 +664,38 @@ object AutoSparkBridge {
     /** 发送互斥：启动补跑 / 前台补跑 / 手动发送之间只允许一轮在跑，避免同一会话发两条。 */
     private val renewRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /** 模块进程被停用时只提示一次，避免每次回前台都弹。 */
-    private val wakeHinted = java.util.concurrent.atomic.AtomicBoolean(false)
-
     /** 上次把快照写回 App 的时间（前台切换很频，限一下频）。 */
     @Volatile
     private var lastSnapshotPushMs = 0L
 
     /** 前台刷新间隔：1 分钟内不重复写。 */
     private const val SNAPSHOT_PUSH_INTERVAL_MS = 60_000L
+
+    /** 心跳刷新间隔：模块 App 用 hostAliveAt 判断抖音是否在运行。 */
+    private const val HOST_TOUCH_INTERVAL_MS = 15_000L
+
+    /** 回前台扫描间隔：避免快速切换界面时重复扫描。 */
+    private const val FOREGROUND_SCAN_INTERVAL_MS = 10_000L
+
+    /** 自动任务刚跑完的这段时间内，回前台不再重复扫描。 */
+    private const val FOREGROUND_SCAN_AFTER_AUTO_MS = 60_000L
+
+    @Volatile
+    private var lastHostTouchMs = 0L
+
+    @Volatile
+    private var lastForegroundScanMs = 0L
+
+    @Volatile
+    private var lastAutoRunMs = 0L
+
+    /** 回到前台时刷新 hostAliveAt。 */
+    private fun touchHostIfStale(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastHostTouchMs < HOST_TOUCH_INTERVAL_MS) return
+        lastHostTouchMs = now
+        ConfigClient.touchHost(context, now)
+    }
 
     private var watcherContext: Context? = null
 
@@ -683,10 +729,11 @@ object AutoSparkBridge {
                 override fun onActivityPaused(activity: android.app.Activity) = Unit
 
                 override fun onActivityStarted(activity: android.app.Activity) {
-                    visibleActivities.incrementAndGet()
-                    // 每次回到界面：先把快照刷新一下（限流），再按条件补跑，最后重新排表
+                    val enteredForeground = visibleActivities.getAndIncrement() == 0
+                    // 回到前台：刷新心跳；从后台切回来时扫一轮，页内切换只刷快照
                     Thread {
-                        pushSnapshotIfStale(context)
+                        touchHostIfStale(context)
+                        if (enteredForeground) scanOnForeground(context) else pushSnapshotIfStale(context)
                         autoRunIfDayChanged(context)
                     }.start()
                     rescheduleWatcher()
@@ -751,6 +798,7 @@ object AutoSparkBridge {
             val summary = runRenew(context, respectEnabled = true)
             if (summary.optBoolean("ok")) {
                 markRunDay(context, today)
+                lastAutoRunMs = System.currentTimeMillis()
                 val sent = summary.optJSONArray("sent")?.length() ?: 0
                 HostTrace.add(context, "跨天补跑完成：已发 $sent 个")
             }
@@ -761,6 +809,23 @@ object AutoSparkBridge {
         } finally {
             autoRunning.set(false)
         }
+    }
+
+    /**
+     * 回到前台时扫一轮：刷新快照并计算待发（界面切换限流，自动任务刚跑完也不再扫）。
+     *
+     * 扫描结果由 runRenew 里的 Toast 提示；配置读不到或 IM 未就绪时静默跳过，不打扰用户。
+     */
+    private fun scanOnForeground(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastForegroundScanMs < FOREGROUND_SCAN_INTERVAL_MS) return
+        if (now - lastAutoRunMs < FOREGROUND_SCAN_AFTER_AUTO_MS) return
+        lastForegroundScanMs = now
+        if (renewRunning.get()) return
+        val outcome = refreshSnapshot(context)
+        if (!outcome.ok) return
+        val summary = runRenew(context, respectEnabled = true)
+        if (summary.optBoolean("ok")) lastAutoRunMs = System.currentTimeMillis()
     }
 
     /**
@@ -1011,7 +1076,7 @@ object AutoSparkBridge {
         val context = HostRuntime.context ?: return
         Thread(
             {
-                wakeModule(context, hint = true)
+                wakeModule(context)
                 HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
                 com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")
                 runCatching {

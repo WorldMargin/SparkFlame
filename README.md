@@ -7,6 +7,8 @@
 > **完整的脚本 API**（`ctx.result`、会话筛选、发送结果回调），以及一节**可直接贴给 AI 的提示词**。
 > **要写模板的 AI 请先读这份。**
 
+> **仓库**：[Gitee（主）](https://gitee.com/WorldMargin/SparkFlame) · [GitHub（镜像）](https://github.com/WorldMargin/SparkFlame)
+
 ## 下载
 
 - **Release 页（推荐）**：[gitee.com/WorldMargin/SparkFlame/releases](https://gitee.com/WorldMargin/SparkFlame/releases)

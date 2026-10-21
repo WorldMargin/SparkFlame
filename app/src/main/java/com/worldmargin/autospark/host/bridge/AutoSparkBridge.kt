@@ -26,7 +26,6 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import com.worldmargin.autospark.WakeActivity
 import com.worldmargin.autospark.app.config.SandboxVar
 import com.worldmargin.autospark.app.script.TemplateVarPrelude
 import com.worldmargin.autospark.core.DouToastHelper
@@ -56,8 +55,7 @@ object AutoSparkBridge {
     private const val MODULE_PACKAGE = "io.github.worldmargin.sparkflame"
 
     /** 空页面的全限定类名：代码包名与 applicationId 不同，不能拼。 */
-    private const val WAKE_ACTIVITY = "com.worldmargin.autospark.WakeActivity"
-
+   
     private val refreshReceiverInstalled = AtomicBoolean(false)
 
     @Volatile
@@ -529,7 +527,7 @@ object AutoSparkBridge {
         targets: List<String>,
         toast: Boolean = false,
     ) {
-        wakeModule(context)
+        wakeModule(context, hint = true)
         val summary = runRenew(context, respectEnabled = false, only = targets.toSet(), ignoreSentToday = true)
         // 发完把快照写回模块 App：不用打开 App 也能看到最新状态与已发记录
         pushSnapshotToModule(context, attempts = 2)
@@ -593,7 +591,10 @@ object AutoSparkBridge {
      * （`adb install` 覆盖安装、`am force-stop` 之后都是）时广播会被丢掉，
      * 这时改用启动一个透明空页面把进程拉起来（停用状态下只有启动 Activity 才管用）。
      */
-    private fun wakeModule(context: Context) {
+    private fun wakeModule(
+        context: Context,
+        hint: Boolean = false,
+    ) {
         ConfigClient.touchHost(context, System.currentTimeMillis())
         runCatching {
             context.sendBroadcast(
@@ -604,20 +605,18 @@ object AutoSparkBridge {
         }.onFailure { ModLog.e("唤醒模块进程失败", it) }
         Thread.sleep(WAKE_WAIT_MS)
         if (ConfigClient.read(context) != null) return
-        // 广播叫不醒（模块 App 被停用）：启动透明空页面兜底，让进程 / provider 就位
-        runCatching {
-            context.startActivity(
-                Intent()
-                    .setClassName(MODULE_PACKAGE, WAKE_ACTIVITY)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
-            )
-        }.onFailure { ModLog.w("启动模块空页面失败：$it") }
-        Thread.sleep(WAKE_WAIT_MS)
+        // 广播叫不醒（模块 App 处于「已停用」状态，常见于覆盖安装 / force-stop 之后）。
+        // 这里**不能**再 startActivity：Android 10+ 会拦截后台启动，部分机型直接弹「是否跳转到 XX」，
+        // 而且每次抖音回前台都会再来一次。改成提示用户手动打开一次。
+        if (hint && wakeHinted.compareAndSet(false, true)) {
+            ModLog.w("模块进程未唤醒：请在桌面打开一次星火燎原")
+            com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：请先打开一次模块 App）")
+        }
     }
 
     /** 手动刷新一次并通知界面（广播接收线程）。 */
     private fun refreshAndNotify(context: Context) {
-        wakeModule(context)
+        wakeModule(context, hint = true)
         val outcome = refreshSnapshot(context)
         HostTrace.add(context, if (outcome.ok) "手动刷新成功：${outcome.detail}" else "手动刷新失败：${outcome.detail}")
         if (!outcome.ok) return
@@ -638,6 +637,12 @@ object AutoSparkBridge {
 
     /** 自动任务互斥：上一轮没跑完就不再起新的。 */
     private val autoRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 发送互斥：启动补跑 / 前台补跑 / 手动发送之间只允许一轮在跑，避免同一会话发两条。 */
+    private val renewRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 模块进程被停用时只提示一次，避免每次回前台都弹。 */
+    private val wakeHinted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 上次把快照写回 App 的时间（前台切换很频，限一下频）。 */
     @Volatile
@@ -811,6 +816,21 @@ object AutoSparkBridge {
         only: Set<String> = emptySet(),
         ignoreSentToday: Boolean = false,
     ): JSONObject {
+        // 同一时刻只允许一轮：否则「启动补跑 + 前台补跑」会各发一次
+        if (!renewRunning.compareAndSet(false, true)) return error("上一轮还在发送，请稍候")
+        return try {
+            runRenewLocked(context, respectEnabled, only, ignoreSentToday)
+        } finally {
+            renewRunning.set(false)
+        }
+    }
+
+    private fun runRenewLocked(
+        context: Context,
+        respectEnabled: Boolean,
+        only: Set<String> = emptySet(),
+        ignoreSentToday: Boolean = false,
+    ): JSONObject {
         val config = ConfigClient.read(context) ?: return error("配置读取失败（模块未安装或未启用）")
         if (respectEnabled && !config.enabled) return error("总开关未开启")
         if (AccountBridge.getCurrentUserId().isNullOrBlank()) return error("未登录")
@@ -883,10 +903,16 @@ object AutoSparkBridge {
         com.worldmargin.autospark.core.DouToastHelper.show(context, pendingHint)
 
         // 第二遍：真正发送
+        // 同一轮里同一个会话只发一次：IM 列表万一返回重复项，也不会发两条
+        val sentThisRun = mutableSetOf<String>()
         for (conversation in candidates) {
             val isGroup = conversation.optBoolean("isGroup")
             val conversationId = conversation.optString("conversationId")
-            if (!ignoreSentToday && config.sentDays[conversationId] == today) {
+            if (!sentThisRun.add(conversationId)) continue
+            // 每发一条前重新读一次：并发的那一轮可能刚把 sentDays 写掉
+            val alreadySentToday =
+                !ignoreSentToday && ConfigClient.read(context)?.sentDays?.get(conversationId) == today
+            if (alreadySentToday) {
                 skipped.put(JSONObject().put("conversationId", conversationId).put("reason", "今日已发送"))
                 continue
             }
@@ -985,7 +1011,7 @@ object AutoSparkBridge {
         val context = HostRuntime.context ?: return
         Thread(
             {
-                wakeModule(context)
+                wakeModule(context, hint = true)
                 HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
                 com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")
                 runCatching {
@@ -1013,9 +1039,9 @@ object AutoSparkBridge {
                         outcome = refreshSnapshot(context)
                     }
                     HostTrace.add(context, "IM 已就绪（探测 $attempt 次），快照已写入")
-                    markRunDay(context, dayFormat.format(Date()))
                     val summary = runRenew(context, respectEnabled = true)
                     if (summary.optBoolean("ok")) {
+                        markRunDay(context, dayFormat.format(Date()))
                         val line =
                             "续火花结果：已发 ${summary.optJSONArray("sent")?.length() ?: 0} / " +
                                 "跳过 ${summary.optJSONArray("skipped")?.length() ?: 0} / " +

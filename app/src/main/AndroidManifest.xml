@@ -24,18 +24,6 @@
             </intent-filter>
         </receiver>
 
-        <!--
-            宿主唤不醒「被系统停用」的模块 App 时的兜底：启动一个透明空页面把进程拉起来
-            （广播与 provider 调用对停用状态的应用都会被系统丢掉，启动 Activity 才行）。
-        -->
-        <activity
-            android:name=".WakeActivity"
-            android:exported="true"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:taskAffinity=""
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-
         <!-- 续火花管理界面：桌面图标入口 + 抖音设置页注入入口（由抖音进程唤起，故需 exported） -->
         <activity
             android:name=".app.ui.settings.SparkSettingsActivity"

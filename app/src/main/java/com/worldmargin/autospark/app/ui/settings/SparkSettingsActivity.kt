@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.animation.ObjectAnimator
 import android.graphics.Rect
 import android.view.Gravity
@@ -163,6 +165,15 @@ class SparkSettingsActivity : Activity() {
 
     /** 页面上的勾选框，按「类型:ID」索引，自动勾选后用来同步界面。 */
     private val transferChecks = mutableMapOf<String, CheckBox>()
+
+    /** 页面上的标签行，用来就地刷新「强制导出 / 可取消」状态，避免整页重绘。 */
+    private val transferTagRows = mutableMapOf<String, TagRowView>()
+
+    /** 导出 / 导入页会话列表的搜索与单聊群聊筛选。 */
+    private var exportQuery = ""
+    private var exportType = 0
+    private var importQuery = ""
+    private var importType = 0
 
     /** 等宿主探活回执的回调（同一时刻只会有一次探活）。 */
     private var hostAliveWaiter: ((Boolean) -> Unit)? = null
@@ -2655,6 +2666,251 @@ class SparkSettingsActivity : Activity() {
             )
         }
 
+    /** 导出 / 导入页的会话行：勾选框 + 头像 + 名称 + 来源。 */
+    private fun conversationCheckRow(
+        config: SparkConfig,
+        avatarSource: SparkConfig,
+        key: String,
+        conversationId: String,
+        checked: Boolean,
+        onToggle: (Boolean) -> Unit,
+    ): View {
+        val snapshot =
+            avatarSource.snapshots.firstOrNull { it.conversationId == conversationId }
+                ?: config.snapshots.firstOrNull { it.conversationId == conversationId }
+        return flatRow().apply {
+            val box =
+                CheckBox(this@SparkSettingsActivity).apply {
+                    isChecked = checked
+                    setOnCheckedChangeListener { _, value -> onToggle(value) }
+                }
+            transferChecks[key] = box
+            addView(box)
+            val avatar =
+                ImageView(this@SparkSettingsActivity).apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(10) }
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                }
+            AvatarLoader.load(this@SparkSettingsActivity, avatar, snapshot?.avatar.orEmpty(), config.conversationLabel(conversationId))
+            addView(avatar)
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(config.conversationLabel(conversationId), 14.5f, COLOR_TEXT))
+                    addView(
+                        text(
+                            "来源：" + (config.group(config.conversation(conversationId)?.inheritFrom)?.name ?: "自定义 / 空白"),
+                            12f,
+                            COLOR_DIM,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
+    /** 行尾加一个「选会话」快捷操作：点一下选中该标签 / 模板下的所有会话。 */
+    private fun quickPickRow(
+        item: View,
+        onClick: () -> Unit,
+    ): View =
+        row().apply {
+            addView(item, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(
+                text("一键选中", 12f, COLOR_ACCENT).apply {
+                    setPadding(dp(10), dp(10), 0, dp(10))
+                    isClickable = true
+                    setOnClickListener { onClick() }
+                },
+            )
+        }
+
+    /** 导出 / 导入页的会话卡片：标题 + 搜索 + 单聊/群聊筛选 + 列表（只重绘列表）。 */
+    private fun transferConversationCard(
+        config: SparkConfig,
+        avatarSource: SparkConfig,
+        items: List<ConversationTemplate>,
+        checked: (String) -> Boolean,
+        query: String,
+        type: Int,
+        onQuery: (String) -> Unit,
+        onType: (Int) -> Unit,
+        onToggle: (String, Boolean) -> Unit,
+    ): View {
+        var currentQuery = query
+        var currentType = type
+        val listHost = column()
+        val card = card()
+
+        fun isGroup(item: ConversationTemplate): Boolean {
+            val snapshot =
+                avatarSource.snapshots.firstOrNull { it.conversationId == item.conversationId }
+                    ?: config.snapshots.firstOrNull { it.conversationId == item.conversationId }
+            return snapshot?.isGroup == true
+        }
+
+        fun renderList() {
+            listHost.removeAllViews()
+            val filtered =
+                items.filter { item ->
+                    val label = config.conversationLabel(item.conversationId)
+                    val hitQuery = currentQuery.isBlank() || label.contains(currentQuery, ignoreCase = true)
+                    val hitType =
+                        when (currentType) {
+                            1 -> !isGroup(item)
+                            2 -> isGroup(item)
+                            else -> true
+                        }
+                    hitQuery && hitType
+                }
+            if (filtered.isEmpty()) {
+                listHost.addView(text("没有匹配的会话", 12f, COLOR_DIM).apply { setPadding(0, dp(8), 0, dp(8)) })
+                return
+            }
+            filtered.forEachIndexed { index, item ->
+                if (index > 0) listHost.addView(divider())
+                listHost.addView(
+                    conversationCheckRow(
+                        config,
+                        avatarSource,
+                        "c:${item.conversationId}",
+                        item.conversationId,
+                        checked(item.conversationId),
+                    ) { value -> onToggle(item.conversationId, value) },
+                )
+            }
+        }
+
+        fun chip(
+            label: String,
+            selected: Boolean,
+            onClick: () -> Unit,
+        ): TextView =
+            text(label, 12f, if (selected) COLOR_ACCENT else COLOR_DIM).apply {
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                background = rounded(if (selected) 0x1A3B7CFF else 0xFFF0F1F5.toInt(), 14)
+                isClickable = true
+                setOnClickListener { onClick() }
+            }
+
+        val chipsRow = row()
+        fun paintChips() {
+            chipsRow.removeAllViews()
+            listOf("全部" to 0, "单聊" to 1, "群聊" to 2).forEach { (label, value) ->
+                chipsRow.addView(chip(label, currentType == value) {
+                    currentType = value
+                    onType(value)
+                    paintChips()
+                    renderList()
+                }.apply { setPadding(dp(12), dp(6), dp(12), dp(6)); if (value != 0) setPadding(dp(6), dp(6), dp(12), dp(6)) })
+            }
+        }
+
+        val search =
+            EditText(this@SparkSettingsActivity).apply {
+                hint = "搜索会话名 / 备注"
+                setSingleLine()
+                setText(query)
+                textSize = 14f
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = rounded(0xFFF0F1F5.toInt(), 10)
+                addTextChangedListener(
+                    object : TextWatcher {
+                        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+                        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+                        override fun afterTextChanged(s: Editable?) {
+                            currentQuery = s?.toString().orEmpty()
+                            onQuery(currentQuery)
+                            renderList()
+                        }
+                    },
+                )
+            }
+
+        card.addView(
+            row().apply {
+                addView(text("会话文案", 15f, COLOR_TEXT, bold = true))
+                addView(spacer())
+                addView(text("${items.size}", 13f, COLOR_DIM))
+            },
+        )
+        card.addView(search.apply { setPadding(dp(12), dp(8), dp(12), dp(8)) })
+        card.addView(chipsRow.apply { setPadding(0, dp(6), 0, dp(2)) })
+        card.addView(divider().apply { setPadding(0, dp(6), 0, 0) })
+        card.addView(listHost)
+        paintChips()
+        renderList()
+        return card
+    }
+
+    /** 就地刷新标签行的强制状态（不触发整页重绘）。 */
+    private fun refreshTransferTagRows(
+        forced: Set<String>,
+        selected: Set<String>,
+        forcedLabel: String,
+    ) {
+        transferTagRows.forEach { (key, row) ->
+            val id = key.removePrefix("tag:")
+            val isForced = id in forced
+            row.box.isChecked = isForced || id in selected
+            row.box.isEnabled = !isForced
+            row.desc.text = if (isForced) "被选中会话引用，$forcedLabel" else "已标记 ${row.usage} 个会话"
+        }
+    }
+
+    /** 导出 / 导入页的标签行：颜色 + 名称；被选中会话引用的标签强制勾选且不可取消。 */
+    private fun tagCheckRow(
+        key: String,
+        tag: SparkTag,
+        usage: Int,
+        forced: Boolean,
+        checked: Boolean,
+        forcedLabel: String,
+        onToggle: (Boolean) -> Unit,
+    ): View {
+        val color = SparkConfig.tagColor(tag.color)
+        return flatRow().apply {
+            val box =
+                CheckBox(this@SparkSettingsActivity).apply {
+                    isChecked = forced || checked
+                    isEnabled = !forced
+                    setOnCheckedChangeListener { _, value -> if (!forced) onToggle(value) }
+                }
+            transferChecks[key] = box
+            addView(box)
+            addView(
+                View(this@SparkSettingsActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(8) }
+                    background = rounded(color, 5)
+                },
+            )
+            val desc =
+                text(
+                    if (forced) "被选中会话引用，$forcedLabel" else "已标记 $usage 个会话",
+                    12f,
+                    COLOR_DIM,
+                )
+            transferTagRows[key] = TagRowView(box, desc, usage)
+            addView(
+                column().apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(text(tag.name, 14.5f, color))
+                    addView(desc)
+                },
+            )
+        }
+    }
+
+    /** 标签行：勾选框 + 说明文字 + 使用数，用于就地刷新强制状态。 */
+    private data class TagRowView(
+        val box: CheckBox,
+        val desc: TextView,
+        val usage: Int,
+    )
+
     /** 把界面上所有勾选框同步成 [selection] 的状态（依赖自动勾选后调用）。 */
     private fun syncTransferChecks(selection: TransferSelection) {
         transferChecks.forEach { (key, box) ->
@@ -2666,6 +2922,7 @@ class SparkSettingsActivity : Activity() {
                     "c" -> TransferSelection.Kind.CONVERSATION
                     "m" -> TransferSelection.Kind.MACRO
                     "f" -> TransferSelection.Kind.FUNCTION
+                    "tag" -> TransferSelection.Kind.TAG
                     else -> return@forEach
                 }
             val want = selection.has(kind, parts[1])
@@ -2678,6 +2935,7 @@ class SparkSettingsActivity : Activity() {
         config: SparkConfig,
         body: LinearLayout,
     ) {
+        transferTagRows.clear()
         body.addView(
             card().apply {
                 addView(text("导出哪些内容", 16f, bold = true))
@@ -2710,12 +2968,48 @@ class SparkSettingsActivity : Activity() {
                     TransferSelection.Kind.CONVERSATION -> "c:$id"
                     TransferSelection.Kind.MACRO -> "m:$id"
                     TransferSelection.Kind.FUNCTION -> "f:$id"
+                    TransferSelection.Kind.TAG -> "tag:$id"
                 }
             exportSelection = exportSelection.toggle(kind, id, checked)
             exportExcluded = if (checked) exportExcluded - key else exportExcluded + key
             if (checked) exportSelection = config.withDependencies(exportSelection, kind, id, exportExcluded)
             syncTransferChecks(exportSelection)
+            if (kind == TransferSelection.Kind.CONVERSATION) {
+                // 只就地刷新标签行，不整页重绘
+                val forced = exportSelection.conversations.flatMap { id -> config.tagsOf(id).map { it.id } }.toSet()
+                exportSelection = exportSelection.copy(tags = exportSelection.tags + forced)
+                refreshTransferTagRows(forced, exportSelection.tags, "强制导出")
+            }
         }
+
+        // 一键选中某标签 / 模板下的所有会话（连带父模板、宏、函数）
+        fun pickConversations(ids: Collection<String>) {
+            if (ids.isEmpty()) {
+                Toast.makeText(this@SparkSettingsActivity, "没有可选的会话", Toast.LENGTH_SHORT).show()
+                return
+            }
+            ids.forEach { id ->
+                exportSelection =
+                    config.withDependencies(
+                        exportSelection.copy(conversations = exportSelection.conversations + id),
+                        TransferSelection.Kind.CONVERSATION,
+                        id,
+                        exportExcluded,
+                    )
+            }
+            val forced = exportSelection.conversations.flatMap { id -> config.tagsOf(id).map { it.id } }.toSet()
+            exportSelection = exportSelection.copy(tags = exportSelection.tags + forced)
+            syncTransferChecks(exportSelection)
+            refreshTransferTagRows(forced, exportSelection.tags, "强制导出")
+            Toast.makeText(this@SparkSettingsActivity, "已选中 " + ids.size + " 个会话", Toast.LENGTH_SHORT).show()
+        }
+
+        // 被选中会话引用的标签：强制导出，界面上不允许取消
+        fun forcedTagIds(): Set<String> =
+            exportSelection.conversations
+                .flatMap { id -> config.tagsOf(id).map { tag -> tag.id } }
+                .toSet()
+        exportSelection = exportSelection.copy(tags = exportSelection.tags + forcedTagIds())
 
         if (config.groups.isNotEmpty()) {
             body.addView(
@@ -2724,29 +3018,62 @@ class SparkSettingsActivity : Activity() {
                     count = config.groups.size,
                     items =
                         config.groups.map { group ->
-                            checkRow(
-                                "t:${group.id}",
-                                group.name.ifBlank { "(未命名模板)" },
-                                "模板正文 " + group.body.length + " 字",
-                                group.id in exportSelection.templates,
-                            ) { checked -> toggle(TransferSelection.Kind.TEMPLATE, group.id, checked) }
+                            quickPickRow(
+                                checkRow(
+                                    "t:${group.id}",
+                                    group.name.ifBlank { "(未命名模板)" },
+                                    "模板正文 " + group.body.length + " 字",
+                                    group.id in exportSelection.templates,
+                                ) { checked -> toggle(TransferSelection.Kind.TEMPLATE, group.id, checked) },
+                            ) {
+                                pickConversations(
+                                    config.conversations
+                                        .filter { it.inheritFrom == group.id }
+                                        .map { it.conversationId },
+                                )
+                            }
                         },
                 ),
             )
         }
         if (config.conversations.isNotEmpty()) {
             body.addView(
+                transferConversationCard(
+                    config = config,
+                    avatarSource = config,
+                    items = config.conversations,
+                    checked = { it in exportSelection.conversations },
+                    query = exportQuery,
+                    type = exportType,
+                    onQuery = { exportQuery = it },
+                    onType = { exportType = it },
+                    onToggle = { id, checked -> toggle(TransferSelection.Kind.CONVERSATION, id, checked) },
+                ),
+            )
+        }
+        if (config.tags.isNotEmpty()) {
+            body.addView(
                 sectionCard(
-                    title = "会话文案",
-                    count = config.conversations.size,
+                    title = "标签",
+                    count = config.tags.size,
                     items =
-                        config.conversations.map { item ->
-                            checkRow(
-                                "c:${item.conversationId}",
-                                config.conversationLabel(item.conversationId),
-                                "来源：" + (config.group(item.inheritFrom)?.name ?: "自定义 / 空白"),
-                                item.conversationId in exportSelection.conversations,
-                            ) { checked -> toggle(TransferSelection.Kind.CONVERSATION, item.conversationId, checked) }
+                        config.tags.map { tag ->
+                            quickPickRow(
+                                tagCheckRow(
+                                    "tag:${tag.id}",
+                                    tag,
+                                    usage = config.tagUsage()[tag.id] ?: 0,
+                                    forced = tag.id in forcedTagIds(),
+                                    checked = tag.id in exportSelection.tags,
+                                    forcedLabel = "强制导出",
+                                ) { checked -> toggle(TransferSelection.Kind.TAG, tag.id, checked) },
+                            ) {
+                                pickConversations(
+                                    config.conversations
+                                        .filter { tag.id in config.conversationTags[it.conversationId].orEmpty() }
+                                        .map { it.conversationId },
+                                )
+                            }
                         },
                 ),
             )
@@ -2817,6 +3144,7 @@ class SparkSettingsActivity : Activity() {
         config: SparkConfig,
         body: LinearLayout,
     ) {
+        transferTagRows.clear()
         body.addView(
             card().apply {
                 addView(text("导入配置", 16f, bold = true))
@@ -2850,7 +3178,7 @@ class SparkSettingsActivity : Activity() {
                     text(
                         "文件里共 " + source.groups.size + " 个模板 / " + source.conversations.size +
                             " 条会话文案 / " + source.macros.size + " 个宏 / " + source.functions.size +
-                            " 个函数 / " + source.snapshots.size + " 条快照。",
+                            " 个函数 / " + source.tags.size + " 个标签 / " + source.snapshots.size + " 条快照。",
                         12f,
                         COLOR_DIM,
                     ),
@@ -2864,12 +3192,24 @@ class SparkSettingsActivity : Activity() {
             },
         )
 
+        // 被勾选的导入会话引用的标签：同样强制带上，不允许取消
+        fun forcedTagIds(): Set<String> =
+            importSelection.conversations
+                .flatMap { id -> source.tagsOf(id).map { tag -> tag.id } }
+                .toSet()
+        importSelection = importSelection.copy(tags = importSelection.tags + forcedTagIds())
+
         fun toggle(
             kind: TransferSelection.Kind,
             id: String,
             checked: Boolean,
         ) {
             importSelection = importSelection.toggle(kind, id, checked)
+            if (kind == TransferSelection.Kind.CONVERSATION) {
+                val forced = importSelection.conversations.flatMap { id -> source.tagsOf(id).map { it.id } }.toSet()
+                importSelection = importSelection.copy(tags = importSelection.tags + forced)
+                refreshTransferTagRows(forced, importSelection.tags, "强制导入")
+            }
         }
 
         if (source.groups.isNotEmpty()) {
@@ -2891,17 +3231,34 @@ class SparkSettingsActivity : Activity() {
         }
         if (source.conversations.isNotEmpty()) {
             body.addView(
+                transferConversationCard(
+                    config = config,
+                    avatarSource = source,
+                    items = source.conversations,
+                    checked = { it in importSelection.conversations },
+                    query = importQuery,
+                    type = importType,
+                    onQuery = { importQuery = it },
+                    onType = { importType = it },
+                    onToggle = { id, checked -> toggle(TransferSelection.Kind.CONVERSATION, id, checked) },
+                ),
+            )
+        }
+        if (source.tags.isNotEmpty()) {
+            body.addView(
                 sectionCard(
-                    title = "会话文案",
-                    count = source.conversations.size,
+                    title = "标签",
+                    count = source.tags.size,
                     items =
-                        source.conversations.map { item ->
-                            checkRow(
-                                "c:${item.conversationId}",
-                                config.conversationLabel(item.conversationId),
-                                "文件里的会话文案",
-                                item.conversationId in importSelection.conversations,
-                            ) { checked -> toggle(TransferSelection.Kind.CONVERSATION, item.conversationId, checked) }
+                        source.tags.map { tag ->
+                            tagCheckRow(
+                                "tag:${tag.id}",
+                                tag,
+                                usage = source.tagUsage()[tag.id] ?: 0,
+                                forced = tag.id in forcedTagIds(),
+                                checked = tag.id in importSelection.tags,
+                                forcedLabel = "强制导入",
+                            ) { checked -> toggle(TransferSelection.Kind.TAG, tag.id, checked) }
                         },
                 ),
             )

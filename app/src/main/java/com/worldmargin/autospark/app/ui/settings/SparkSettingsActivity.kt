@@ -2585,7 +2585,7 @@ class SparkSettingsActivity : Activity() {
 
     /** 导出整份配置（JSON，带缩进便于查看与改）。 */
     private fun exportConfig(config: SparkConfig) {
-        val pretty = runCatching { org.json.JSONObject(configJson()).toString(2) }.getOrDefault(configJson())
+        val pretty = exportJson(config)
         pendingExport = pretty
         val intent =
             Intent(Intent.ACTION_CREATE_DOCUMENT)
@@ -2608,11 +2608,38 @@ class SparkSettingsActivity : Activity() {
 
     private fun copyConfig(config: SparkConfig = ConfigStore.load(this)) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 配置", configJson(config)))
+        clipboard.setPrimaryClip(ClipData.newPlainText("星火燎原 配置", exportJson(config)))
         Toast.makeText(this, "配置 JSON 已复制", Toast.LENGTH_SHORT).show()
     }
 
     private fun configJson(config: SparkConfig = ConfigStore.load(this)): String = ConfigCodec.encode(config)
+
+    /**
+     * 导出用的 JSON：只写有内容的顶层字段。
+     *
+     * 空数组、空串、0、false 这些「默认值」不落盘，导出文件里只剩真正选中的内容；
+     * 导入侧对缺失字段走默认值，不受影响。
+     */
+    private fun exportJson(config: SparkConfig): String =
+        runCatching {
+            val obj = org.json.JSONObject(configJson(config))
+            val keys = obj.keys().asSequence().toList()
+            keys.forEach { key ->
+                val value = obj.opt(key)
+                val empty =
+                    when (value) {
+                        null -> true
+                        is org.json.JSONArray -> value.length() == 0
+                        is org.json.JSONObject -> value.length() == 0
+                        is String -> value.isBlank()
+                        is Boolean -> !value
+                        is Number -> value.toLong() == 0L
+                        else -> false
+                    }
+                if (empty) obj.remove(key)
+            }
+            obj.toString(2)
+        }.getOrDefault(configJson(config))
 
     private fun exportFileName(): String =
         "星火燎原-配置-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.getDefault()).format(Date()) + ".json"

@@ -110,12 +110,33 @@ fun SparkConfig.functionIdsIn(bodies: Collection<String>): Set<String> {
 }
 
 /** 按勾选裁出一份配置（导出用）。 */
-fun SparkConfig.subsetOf(selection: TransferSelection): SparkConfig =
-    copy(
+fun SparkConfig.subsetOf(selection: TransferSelection): SparkConfig {
+    // 白名单式：只 new 出要带走的配置字段，其余一律走默认值。
+    // 这样以后新增运行时字段（hostNote / 引导标记之类）默认不会被导出，
+    // 不会像 copy() 那样“默认全带、漏删就泄漏”。
+    val sandboxOwners =
+        selection.macros.map { "macro:$it" }.toSet() +
+            selection.conversations.map { "template:$it" }.toSet()
+    return SparkConfig(
         groups = groups.filter { it.id in selection.templates },
         conversations = conversations.filter { it.conversationId in selection.conversations },
+        sentDays = if (selection.sentDays) sentDays else emptyMap(),
+        snapshots = if (selection.snapshots) snapshots else emptyList(),
+        forcedRenew =
+            if (selection.conversations.isEmpty()) {
+                emptySet()
+            } else {
+                forcedRenew.filter { it in selection.conversations }.toSet()
+            },
+        forcedSkip =
+            if (selection.conversations.isEmpty()) {
+                emptySet()
+            } else {
+                forcedSkip.filter { it in selection.conversations }.toSet()
+            },
         macros = macros.filter { it.id in selection.macros },
         functions = functions.filter { it.id in selection.functions },
+        sandbox = sandbox.filter { it.owner in sandboxOwners },
         tags = tags.filter { it.id in selection.tags },
         conversationTags =
             if (selection.tags.isEmpty()) {
@@ -126,11 +147,8 @@ fun SparkConfig.subsetOf(selection: TransferSelection): SparkConfig =
                     .mapValues { (_, ids) -> ids.filter { it in selection.tags }.toSet() }
                     .filterValues { it.isNotEmpty() }
             },
-        snapshots = if (selection.snapshots) snapshots else emptyList(),
-        sentDays = if (selection.sentDays) sentDays else emptyMap(),
-        forcedRenew = if (selection.conversations.isEmpty()) emptySet() else forcedRenew.filter { it in selection.conversations }.toSet(),
-        forcedSkip = if (selection.conversations.isEmpty()) emptySet() else forcedSkip.filter { it in selection.conversations }.toSet(),
     )
+}
 
 /**
  * 把 [source] 里勾选的条目并进当前配置（同名 id 覆盖，其余保留）。
@@ -193,8 +211,10 @@ private fun SparkConfig.mergeConversationTags(
     val next = conversationTags.toMutableMap()
     selection.conversations.forEach { conversationId ->
         val incoming = source.conversationTags[conversationId] ?: return@forEach
-        val valid = incoming.filter { it in tagIds }.toSet()
-        if (valid.isEmpty()) next.remove(conversationId) else next[conversationId] = valid
+        // 合并而不是覆盖：本地已有、文件里没有的标签保留
+        val add = incoming.filter { it in tagIds }.toSet()
+        if (add.isEmpty()) return@forEach
+        next[conversationId] = next[conversationId].orEmpty() + add
     }
     return next
 }

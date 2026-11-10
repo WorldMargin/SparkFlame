@@ -440,6 +440,7 @@ object SparkScriptEngine {
             Doc("getConversation", "id: string", "按会话 id 取信息结构（没有返回 null）", "SparkConversationDetail | null", SYSTEM_OBJ),
             Doc("getTemplate", "id: string", "按模板 id 取信息结构（id/name/body/childs/isBuiltin）", "any", SYSTEM_OBJ),
             Doc("getMacro", "id: string", "按宏 id 取信息结构（id/name/body/templates/conversations）", "any", SYSTEM_OBJ),
+            Doc("getMacros", "", "所有宏的列表：id / name / appliesTo / templateOnly", "any[]", SYSTEM_OBJ),
             Doc("mountMacro", "id: string, target?: any", "按宏 id 挂到指定会话 / 模板（不传 = 当前会话）", "void", SYSTEM_OBJ),
             Doc("unmountMacro", "id: string, target?: any", "按宏 id 从指定会话 / 模板摘掉", "void", SYSTEM_OBJ),
             Doc("unmountAll", "target?: any", "把指定目标上的所有宏都摘掉", "void", SYSTEM_OBJ),
@@ -669,6 +670,12 @@ object SparkScriptEngine {
           getConversation: function(id){ return __lookup("conversations", id); },
           getTemplate: function(id){ return __lookup("templates", id); },
           getMacro: function(id){ return __lookup("macros", id); },
+          getMacros: function(){
+            var table = __sb.info.macros || {};
+            var out = [];
+            for (var k in table) { if (Object.prototype.hasOwnProperty.call(table, k)) out.push(table[k]); }
+            return out;
+          },
           mountMacro: function(id, target){
             if (__sb.preview) return;
             __requireMacroId(id);

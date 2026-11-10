@@ -190,6 +190,12 @@ ctx.system.mountMacro("宏 id", { conversation: "会话 id" });
 ctx.system.mountMacro("宏 id", { template: "模板 id" });              // 跟着派生会话一起跑
 ctx.system.mountMacro("宏 id", { template: "模板 id", inherit: false }); // 仅模板，不往派生会话传播
 ctx.system.unmountMacro("宏 id", { conversation: "会话 id" });
+
+**宏 id 怎么拿**：
+
+- 宏脚本自己：`ctx.macro.id`（模板段为空串）
+- 其它宏：`ctx.system.getMacros()` 列出全部宏，按 `name` 找 `id`，再传给 `mountMacro` / `unmountMacro`
+- 导出的配置 JSON 里也有 `macros[].id`
 ctx.system.unmountAll();                                              // 摘掉当前会话上的所有宏
 ```
 
@@ -276,6 +282,7 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 | `ctx.system.getConversation(id)` | 按会话 id 取详细信息，没有返回 `null` |
 | `ctx.system.getTemplate(id)` | 按模板 id 取：`{ id, name, body, childs, isBuiltin }` |
 | `ctx.system.getMacro(id)` | 按宏 id 取：`{ id, name, body, templates, conversations }` |
+| `ctx.system.getMacros()` | 所有宏的数组：`{ id, name, appliesTo, templateOnly }` |
 | `ctx.system.mountMacro(id, target?)` | 按宏 **id** 挂到指定目标（不传 = 当前会话） |
 | `ctx.system.unmountMacro(id, target?)` | 按宏 **id** 从指定目标摘掉 |
 | `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
@@ -535,6 +542,7 @@ ctx.builtin.untilNewYear()            距下一个元旦还有几天
 ctx.builtin.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
 ctx.system.getAllConversation(filter?) 本轮会话，返回 SparkConversation[]；filter 传对象按字段筛（如 {willSend:true}），也可以传函数逐项判断
 ctx.system.getConversation(id)        按会话 id 取详细信息
+ctx.system.getMacros()                 所有宏的数组（id / name / appliesTo / templateOnly）
 ctx.registerCallback(function (res) { ... }) 注册发送结果回调：res = {id, result, reason?}
   （id 是会话 id；result 为 Succeed / Skipped / Failed）
 

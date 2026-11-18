@@ -584,6 +584,7 @@ class SparkSettingsActivity : Activity() {
         config: SparkConfig,
         key: String,
     ): View {
+        if (key == SUB_SEGMENTS) return buildSegmentsPage(config)
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
         when (key) {
             SUB_OVERVIEW -> {
@@ -3769,6 +3770,127 @@ class SparkSettingsActivity : Activity() {
      * 设置页只留最常用的开关与入口：概览 / 手动归属 / 编辑器 / 宿主状态 / 关于都进二级页面
      * （见 [buildSubPage]），避免一屏塞满。
      */
+    private fun stickerModeLabel(mode: String): String =
+        when (mode) {
+            "stickerOnly" -> "仅贴纸入队，前面的文本继续累积"
+            "appendLast" -> "贴纸放到最后发送"
+            "prependFirst" -> "贴纸放到最前发送"
+            else -> "贴纸前先 commit 前面的文本（推荐）"
+        }
+
+    private fun showStickerModeDialog(current: String) {
+        val modes =
+            listOf(
+                "split" to "贴纸前先 commit 前面的文本",
+                "stickerOnly" to "仅贴纸入队，文本继续累积",
+                "appendLast" to "贴纸放到最后",
+                "prependFirst" to "贴纸放到最前",
+            )
+        var checked = modes.indexOfFirst { it.first == current }.coerceAtLeast(0)
+        AlertDialog
+            .Builder(this)
+            .setTitle("贴纸 push 行为")
+            .setSingleChoiceItems(modes.map { it.second }.toTypedArray(), checked) { dialog, which ->
+                checked = which
+                ConfigStore.update(this) { it.copy(stickerPushMode = modes[which].first) }
+                dialog.dismiss()
+                recreate()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showMaxCommitsDialog(current: Int) {
+        val values = listOf(1, 2, 3, 5, 10)
+        val checked = values.indexOf(current).coerceAtLeast(0)
+        AlertDialog
+            .Builder(this)
+            .setTitle("每会话最多 commit 次数")
+            .setSingleChoiceItems(values.map { "$it 次" }.toTypedArray(), checked) { dialog, which ->
+                ConfigStore.update(this) { it.copy(maxCommits = values[which]) }
+                dialog.dismiss()
+                recreate()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun buildSegmentsPage(config: SparkConfig): View {
+        val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
+
+        val modes =
+            listOf(
+                "split" to "贴纸前先 commit 前面的文本",
+                "stickerOnly" to "仅贴纸入队，文本继续累积",
+                "appendLast" to "贴纸放到最后",
+                "prependFirst" to "贴纸放到最前",
+            )
+        body.addView(
+            card().apply {
+                addView(
+                    segmentSpinnerRow(
+                        "贴纸 push",
+                        modes.map { it.second },
+                        modes.indexOfFirst { it.first == config.stickerPushMode }.coerceAtLeast(0),
+                    ) { index ->
+                        ConfigStore.update(this@SparkSettingsActivity) {
+                            it.copy(stickerPushMode = modes[index].first)
+                        }
+                    },
+                )
+                addView(
+                    segmentSpinnerRow(
+                        "commit 上限",
+                        listOf("1 次", "2 次", "3 次", "5 次", "10 次"),
+                        listOf(1, 2, 3, 5, 10).indexOf(config.maxCommits).coerceAtLeast(0),
+                    ) { index ->
+                        ConfigStore.update(this@SparkSettingsActivity) {
+                            it.copy(maxCommits = listOf(1, 2, 3, 5, 10)[index])
+                        }
+                    },
+                )
+            },
+        )
+        return body
+    }
+
+    /** 一行「标题 + 原生 Spinner」；选择变化回调下标。 */
+    private fun segmentSpinnerRow(
+        label: String,
+        options: List<String>,
+        selected: Int,
+        onPick: (Int) -> Unit,
+    ): View {
+        val spinner =
+            android.widget.Spinner(this).apply {
+                adapter =
+                    android.widget.ArrayAdapter(
+                        this@SparkSettingsActivity,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        options,
+                    )
+                setSelection(selected, false)
+                onItemSelectedListener =
+                    object : android.widget.AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(
+                            parent: android.widget.AdapterView<*>?,
+                            view: View?,
+                            position: Int,
+                            id: Long,
+                        ) {
+                            if (position != selected) onPick(position)
+                        }
+
+                        override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+                    }
+            }
+        return row().apply {
+            setPadding(dp(14), dp(8), dp(10), dp(8))
+            addView(text(label, 14f, COLOR_TEXT), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(spinner, LinearLayout.LayoutParams(dp(210), LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
     private fun buildSettingsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
@@ -3799,6 +3921,11 @@ class SparkSettingsActivity : Activity() {
         )
 
         body.addView(sectionTitle("更多"))
+        body.addView(
+            menuRow(UiKit.Icons.DEBUG_ALT, "运行设置", "") {
+                openSubPage(SUB_SEGMENTS)
+            },
+        )
         body.addView(
             menuRow(UiKit.Icons.GRAPH, "概览", "会话数、今日已续 / 待续 / 待重燃、今日已发") {
                 openSubPage(SUB_OVERVIEW)
@@ -3905,7 +4032,8 @@ class SparkSettingsActivity : Activity() {
         /** 设置页的二级页面：键 → 标题。 */
         val SUB_PAGES =
             linkedMapOf(
-                SUB_OVERVIEW to "概览",
+                SUB_SEGMENTS to "运行设置",
+            SUB_OVERVIEW to "概览",
                 SUB_ASSIGN to "手动归属",
                 SUB_EDITOR to "编辑器",
                 SUB_CONFIG to "配置",
@@ -3929,6 +4057,7 @@ class SparkSettingsActivity : Activity() {
         const val PAGE_MACROS = 0
         const val PAGE_FUNCTIONS = 1
 
+        const val SUB_SEGMENTS = "segments"
         const val SUB_OVERVIEW = "overview"
         const val SUB_ASSIGN = "assign"
         const val SUB_EDITOR = "editor"

@@ -109,6 +109,10 @@ object SparkScriptEngine {
         val info: String = "{}",
         /** 抖音表情目录：`[{code,name,pinyin}]`。 */
         val emojis: String = "[]",
+        /** 每个会话最多 commit 多少次（含贴纸段）。 */
+        val maxCommits: Int = 3,
+        /** 贴纸 push 行为：split / stickerOnly / appendLast / prependFirst。 */
+        val stickerPushMode: String = "split",
         /**
          * 预览 / 试算模式：**不触发任何会改数据的动作**
          *（写变量、删变量、挂载 / 摘掉宏），只把文案算出来。
@@ -120,6 +124,15 @@ object SparkScriptEngine {
         }
     }
 
+    /** 一段待发送内容：文本或互动贴纸。 */
+    data class SendSegment(
+        val kind: String,
+        val text: String = "",
+        val name: String = "",
+        val id: String = "",
+        val handle: String = "",
+    )
+
     /** 渲染结果：文案 + 脚本对沙盒与宏的改动（由调用方落盘）。 */
     data class Rendered(
         val text: String,
@@ -129,6 +142,8 @@ object SparkScriptEngine {
         val macroOps: List<MacroOp>,
         /** 脚本用 `ctx.registerCallback` 注册的会话结果回调（发送后由宿主触发）。 */
         val callbacks: List<Function> = emptyList(),
+        /** 分段发送内容（文本 / 贴纸）；为空时按 [text] 发一条。 */
+        val segments: List<SendSegment> = emptyList(),
     )
 
     /**
@@ -244,21 +259,33 @@ object SparkScriptEngine {
             val program =
                 "$CTX.$RESULT_OBJ = [];\n" +
                     "__sb.result0 = $CTX.$RESULT_OBJ;\n" +
+                    "__sparkInitResult($CTX.$RESULT_OBJ);\n" +
+                    "try {\n" +
                     script +
-                    "\n;\n" +
+                    "\n} catch (__sparkErr) { if (!(__sparkErr && __sparkErr.__sparkStop)) throw __sparkErr; }\n" +
+                    ";\n" +
                     "__sparkSyncResult();\n" +
-                    "(typeof $CTX.$RESULT_OBJ === 'undefined' || $CTX.$RESULT_OBJ == null)" +
-                    " ? undefined : $CTX.$RESULT_OBJ;"
+                    "__sparkFinalize();"
             val result = cx.evaluateString(scope, program, "autospark", 1, null)
             if (result == null || result == Scriptable.NOT_FOUND || result == Undefined.instance) {
                 throw IllegalStateException("脚本没有给 ctx.result 赋值")
             }
-            val text = flatten(result).trim()
             val changes = collectChanges(cx, scope)
             val callbacks = collectCallbacks(scope)
+            val segments = parseSegments(Context.toString(result))
+            val text = segments.filter { it.kind == "text" }.joinToString("\n") { it.text }.trim()
             // 空结果按「跳过」处理（文档口径：空列表 = 这条不发），把回调一起带出去，宿主可以回一个 Skipped
-            if (text.isEmpty()) throw EmptyResultException("ctx.result 是空的（没有内容可发送）", callbacks)
-            return Rendered(text, changes.writes, changes.deletes, changes.ops, callbacks)
+            if (text.isEmpty() && segments.none { it.kind == "sticker" }) {
+                throw EmptyResultException("ctx.result 是空的（没有内容可发送）", callbacks)
+            }
+            return Rendered(
+                text = text,
+                sandboxWrites = changes.writes,
+                sandboxDeletes = changes.deletes,
+                macroOps = changes.ops,
+                callbacks = callbacks,
+                segments = segments,
+            )
         } finally {
             Context.exit()
         }
@@ -266,6 +293,24 @@ object SparkScriptEngine {
 
     /** 沙盒里 `__sb` 这个名字（脚本可见但约定不碰）。 */
     private const val SANDBOX_STATE_VAR = "__sb"
+
+    /** 解析 JS 侧 `__sparkFinalize()` 返回的分段数组。 */
+    private fun parseSegments(json: String): List<SendSegment> =
+        runCatching {
+            val array = org.json.JSONArray(json)
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val kind = item.optString("kind")
+                if (kind.isEmpty()) return@mapNotNull null
+                SendSegment(
+                    kind = kind,
+                    text = item.optString("text"),
+                    name = item.optString("name"),
+                    id = item.optString("id"),
+                    handle = item.optString("handle"),
+                )
+            }
+        }.getOrDefault(emptyList())
 
     /** 把 owner → key → 值 拼成 `{"owner":{"key":<json>}}`（值本身就是 JSON 文本）。 */
     private fun sandboxJson(env: SandboxEnv): String {
@@ -336,6 +381,7 @@ object SparkScriptEngine {
         conversationId: String,
         result: String,
         reason: String = "",
+        segmentsJson: String = "",
     ): Rendered {
         if (callbacks.isEmpty()) return Rendered("", emptyList(), emptyList(), emptyList())
         val scope = callbacks.first().parentScope ?: return Rendered("", emptyList(), emptyList(), emptyList())
@@ -347,6 +393,13 @@ object SparkScriptEngine {
             cx.setClassShutter(denyJava)
             cx.instructionObserverThreshold = OBSERVER_THRESHOLD
             val argument = cx.newObject(scope)
+            if (segmentsJson.isNotBlank()) {
+                runCatching {
+                    val status =
+                        cx.evaluateString(scope, "__sb.segmentStatus = $segmentsJson; __sb.segmentStatus;", "segments", 1, null)
+                    ScriptableObject.putProperty(argument, "segments", status)
+                }
+            }
             ScriptableObject.putProperty(argument, "id", conversationId)
             ScriptableObject.putProperty(argument, "result", result)
             if (reason.isNotBlank()) ScriptableObject.putProperty(argument, "reason", reason)
@@ -587,6 +640,91 @@ object SparkScriptEngine {
           if (Object.prototype.toString.call(chosen) !== "[object Array]") chosen = [chosen];
           ctx.result = chosen;
           __sb.result0 = chosen;
+        }
+
+        // ---- 分段发送：ctx.commit / submit / exit / segment，贴纸对象 push ----
+        var __sparkSegs = [], __sparkFront = [], __sparkLast = [], __sparkCommits = 0;
+        var __sparkExited = false;
+
+        function __sparkInitResult(list){
+          list.push = function(x){
+            if (x && typeof x === "object" && x.type === "sticker"){ __sparkSticker(x); return this.length; }
+            return Array.prototype.push.call(this, x);
+          };
+        }
+
+        function __sparkTextOf(){
+          var arr = ctx.result;
+          if (typeof arr === "string") arr = [arr];
+          if (Object.prototype.toString.call(arr) !== "[object Array]") arr = [arr];
+          return arr ? arr.join("\n").trim() : "";
+        }
+
+        function __sparkClearResult(){
+          ctx.result = [];
+          __sparkInitResult(ctx.result);
+          __sb.result0 = ctx.result;
+        }
+
+        function __sparkAddText(text){
+          if (!text) return null;
+          var max = Number(__sb.maxCommits || 3);
+          if (__sparkCommits >= max && __sparkSegs.length){
+            var lastSeg = __sparkSegs[__sparkSegs.length - 1];
+            if (lastSeg.kind === "text"){ lastSeg.text += "\n" + text; return lastSeg; }
+          }
+          var seg = { kind: "text", text: text };
+          __sparkSegs.push(seg);
+          return seg;
+        }
+
+        function __sparkCommitText(){
+          var text = __sparkTextOf();
+          __sparkClearResult();
+          return __sparkAddText(text);
+        }
+
+        function __sparkSticker(st){
+          var item = { kind: "sticker", name: String(st.name || ""), id: st.id ? String(st.id) : "" };
+          var mode = __sb.stickerPushMode || "split";
+          if (mode === "appendLast"){ __sparkLast.push(item); return; }
+          if (mode === "prependFirst"){ __sparkFront.push(item); return; }
+          if (mode === "stickerOnly"){ __sparkSegs.push(item); return; }
+          __sparkCommitText();
+          __sparkSegs.push(item);
+        }
+
+        ctx.commit = function(){
+          var seg = __sparkCommitText();
+          __sparkCommits++;
+          var handle = seg ? ("seg-" + __sparkSegs.length) : ("seg-" + __sparkSegs.length);
+          return { handle: handle, index: __sparkSegs.length };
+        };
+
+        ctx.submit = function(){
+          __sparkCommitText();
+          throw { __sparkStop: true, __sparkKind: "submit" };
+        };
+
+        ctx.exit = function(){
+          __sparkExited = true;
+          __sparkSegs = []; __sparkFront = []; __sparkLast = [];
+          __sparkClearResult();
+          throw { __sparkStop: true, __sparkKind: "exit" };
+        };
+
+        ctx.segment = function(handle){
+          var table = __sb.segmentStatus || {};
+          return table[handle] || { handle: handle, status: "pending" };
+        };
+
+        function __sparkFinalize(){
+          if (__sparkExited) return "[]";
+          __sparkCommitText();
+          var out = [].concat(__sparkFront, __sparkSegs, __sparkLast);
+          for (var i = 0; i < out.length; i++){ out[i].handle = "seg-" + (i + 1); }
+          __sparkFront = []; __sparkLast = [];
+          return JSON.stringify(out);
         }
 
         // 系统接口：会话列表 + 宏挂载

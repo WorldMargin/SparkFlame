@@ -207,6 +207,10 @@ data class SparkConfig(
     val tags: List<SparkTag> = emptyList(),
     /** 会话 id → 标签 id 集合；一个会话可以有多个标签。 */
     val conversationTags: Map<String, Set<String>> = emptyMap(),
+    /** 贴纸 push 行为：split / stickerOnly / appendLast / prependFirst。 */
+    val stickerPushMode: String = "split",
+    /** 每个会话最多 commit 多少次（含贴纸段）。 */
+    val maxCommits: Int = 3,
     /**
      * 宿主（抖音进程）最近一次运行的简报：快照刷新是否成功、失败原因、续火花结果。
      * 本机 LSPosed 日志不可用，这是唯一能让管理界面看到宿主侧状态的通道。
@@ -797,6 +801,8 @@ object ConfigCodec {
     private const val KEY_SNAPSHOTS = "snapshots"
     private const val KEY_FORCED_RENEW = "forcedRenew"
     private const val KEY_FORCED_SKIP = "forcedSkip"
+    private const val KEY_STICKER_PUSH_MODE = "stickerPushMode"
+    private const val KEY_MAX_COMMITS = "maxCommits"
     private const val KEY_HOST_NOTE = "hostNote"
     private const val KEY_HOST_NOTE_AT = "hostNoteAt"
     private const val KEY_HOST_ALIVE_AT = "hostAliveAt"
@@ -968,6 +974,8 @@ object ConfigCodec {
             .put(KEY_SANDBOX, sandbox)
             .put(KEY_TAGS, tags)
             .put(KEY_CONVERSATION_TAGS, conversationTags)
+            .put(KEY_STICKER_PUSH_MODE, config.stickerPushMode)
+            .put(KEY_MAX_COMMITS, config.maxCommits)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
             .put(KEY_HOST_ALIVE_AT, config.hostAliveAt)
@@ -1132,6 +1140,8 @@ object ConfigCodec {
             sandbox = sandbox,
             tags = tags,
             conversationTags = conversationTags,
+            stickerPushMode = root.optString(KEY_STICKER_PUSH_MODE, "split").ifBlank { "split" },
+            maxCommits = root.optInt(KEY_MAX_COMMITS, 3).coerceIn(1, 20),
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),
             hostAliveAt = root.optLong(KEY_HOST_ALIVE_AT),

@@ -181,6 +181,8 @@ fun SparkConfig.mergeFrom(
         conversationTags = mergeConversationTags(source, selection, tagIds),
         forcedRenew = if (selection.conversations.isEmpty()) forcedRenew else forcedRenew + source.forcedRenew.filter { it in conversationIds },
         forcedSkip = if (selection.conversations.isEmpty()) forcedSkip else forcedSkip + source.forcedSkip.filter { it in conversationIds },
+        stickerPushMode = source.stickerPushMode,
+        maxCommits = source.maxCommits,
     )
 }
 

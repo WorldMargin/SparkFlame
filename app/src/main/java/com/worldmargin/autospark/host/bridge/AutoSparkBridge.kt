@@ -105,6 +105,10 @@ object AutoSparkBridge {
             preview = false,
         )
 
+    /** provider 不可达时只提示一次，避免每个会话刷屏。 */
+    @Volatile
+    private var providerFailureShown = false
+
     /** 表情目录 JSON（`[{code,name,pinyin}]`），进程内缓存一次。 */
     @Volatile
     private var emojiCatalogCache: String? = null
@@ -504,7 +508,16 @@ object AutoSparkBridge {
         }
         traceConversations(context, fetched)
         val written = ConfigClient.putSnapshots(context, snapshots)
-        if (!written) return RefreshOutcome(false, "快照写入配置失败（跨进程通道不可用）")
+        if (!written) {
+            if (!providerFailureShown) {
+                providerFailureShown = true
+                com.worldmargin.autospark.core.DouToastHelper.show(
+                    context,
+                    "（星火燎原：写回模块失败，请打开一次模块 App 后重试）",
+                )
+            }
+            return RefreshOutcome(false, "快照写入配置失败（跨进程通道不可用）")
+        }
         // 快照落盘后按保留策略清理：不在已选目标里的会话，模板与发送记录按 30 天宽限期清掉
         ConfigClient.prune(context, now)
         return RefreshOutcome(true, "${snapshots.size} 个会话")

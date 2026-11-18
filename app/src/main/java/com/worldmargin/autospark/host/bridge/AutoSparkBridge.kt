@@ -107,6 +107,57 @@ object AutoSparkBridge {
             preview = false,
         )
 
+    /** 按名字生成互动表情 content（目录来自 keva 的 interactive_resource_config）。 */
+    private fun stickerContentFor(
+        context: Context,
+        name: String,
+    ): String {
+        if (name.isBlank()) return ""
+        val item =
+            com.worldmargin.autospark.host.im.StickerCatalog.items(context).firstOrNull { it.name == name }
+                ?: return ""
+        val url =
+            org.json.JSONObject()
+                .put("uri", item.staticUrl)
+                .put("url_list", org.json.JSONArray().put(item.staticUrl))
+                .put("width", 100)
+                .put("height", 100)
+                .put("data_size", 0)
+        val content =
+            org.json.JSONObject()
+                .put("danmaku_id", "")
+                .put("danmaku_text", "")
+                .put("display_name", item.name)
+                .put("emoji_from", "lite")
+                .put("id", item.name)
+                .put("emoji_source", "system_provided")
+                .put("emoji_type", "lite_emoji")
+                .put("height", 100)
+                .put("width", 100)
+                .put("image_id", 0)
+                .put("image_type", "png")
+                .put("match_uid", "")
+                .put("message_reply_display_type", 0)
+                .put("package_id", 0)
+                .put("replace_nick_user_id", "")
+                .put("show_notice", false)
+                .put("source_schema", "")
+                .put("resource_type", 4)
+                .put("sticker_type", 12)
+                .put("top_desc_receiver_v3", "")
+                .put("top_desc_scene_type", 0)
+                .put("top_desc_sender_v3", "")
+                .put("top_desc_uid_match", "")
+                .put("updateConversationTime", true)
+                .put("url", url)
+                .put("version", "2")
+                .put("createdAt", 0)
+                .put("is_card", false)
+                .put("msgHint", "")
+                .put("aweType", 507)
+        return content.toString()
+    }
+
     /** 表情目录 JSON（`[{code,name,pinyin}]`），进程内缓存一次。 */
     @Volatile
     private var emojiCatalogCache: String? = null
@@ -1150,8 +1201,7 @@ object AutoSparkBridge {
                             .put("reason", if (ok) "" else firstReason),
                     )
                 } else {
-                    val stickerContent =
-                        if (seg.name == "续火花") com.worldmargin.autospark.host.im.ImMsgBridge.XUHUOHUA_STICKER_CONTENT else ""
+                    val stickerContent = stickerContentFor(context, seg.name)
                     if (stickerContent.isEmpty()) {
                         if (firstReason.isEmpty()) firstReason = "暂不支持的贴纸：${seg.name}"
                         segResults.put(

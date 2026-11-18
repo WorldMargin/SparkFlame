@@ -88,4 +88,34 @@ object ConfigClient {
             context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_SNAPSHOTS, null, extras)
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
+    /** 已同步的抖音表情资源版本。 */
+    fun emojiVersion(context: Context): String? =
+        runCatching {
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_EMOJI_VERSION, null, null)
+                ?.getString(ConfigContract.KEY_VERSION)
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+
+    /** 推送一批表情资源（版本 + 分片序号 + JSON 负载）。 */
+    fun putEmojiChunk(
+        context: Context,
+        version: String,
+        index: Int,
+        total: Int,
+        offset: Long,
+        bytes: ByteArray,
+    ): Boolean =
+        runCatching {
+            val extras =
+                Bundle().apply {
+                    putString(ConfigContract.KEY_VERSION, version)
+                    putInt(ConfigContract.KEY_INDEX, index)
+                    putInt(ConfigContract.KEY_TOTAL, total)
+                    putLong(ConfigContract.KEY_OFFSET, offset)
+                    putByteArray(ConfigContract.KEY_BYTES, bytes)
+                }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_EMOJI_CHUNK, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
 }

@@ -26,6 +26,7 @@ import com.worldmargin.autospark.app.config.ConfigCodec
 import com.worldmargin.autospark.app.config.SandboxVar
 import com.worldmargin.autospark.app.editor.SparkEditor
 import com.worldmargin.autospark.app.editor.SparkEditors
+import com.worldmargin.autospark.app.ui.common.stickerButton
 import com.worldmargin.autospark.app.ui.common.UiKit
 
 /**
@@ -114,6 +115,7 @@ class MacroEditActivity : Activity() {
                 addView(iconButton(UiKit.Icons.TARGET, "", compact = true, hint = "选目标") { pickTargets() })
 
                 addView(pasteButton(editor))
+            addView(stickerButton(editor))
                 addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
                     addView(iconButton(UiKit.Icons.TRASH, "", compact = true, hint = "删除") { confirmDelete() })

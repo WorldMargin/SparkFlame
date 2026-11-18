@@ -2,6 +2,7 @@ package com.worldmargin.autospark.app.provider
 
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.Context
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
@@ -35,6 +36,12 @@ object ConfigContract {
     const val KEY_DAY = "day"
     const val KEY_OK = "ok"
     const val KEY_TIME = "time"
+    const val KEY_VERSION = "version"
+    const val KEY_INDEX = "index"
+    const val KEY_TOTAL = "total"
+    const val KEY_PAYLOAD = "payload"
+    const val KEY_BYTES = "bytes"
+    const val KEY_OFFSET = "offset"
 
     /** 管理界面 → 抖音进程：请求刷新会话快照。 */
     const val ACTION_REFRESH_SNAPSHOT = "com.worldmargin.autospark.action.REFRESH_SNAPSHOT"
@@ -72,6 +79,12 @@ object ConfigContract {
 
     /** 写入宿主存活时间戳，Bundle["time"]。 */
     const val METHOD_TOUCH_HOST = "touchHost"
+
+    /** 查询已同步的抖音表情资源版本。 */
+    const val METHOD_EMOJI_VERSION = "emojiVersion"
+
+    /** 写入一批表情资源（version / index / total / payload）。 */
+    const val METHOD_PUT_EMOJI_CHUNK = "putEmojiChunk"
 
     /**
      * 抖音进程 → 本模块进程：唤醒。
@@ -156,6 +169,28 @@ class ConfigProvider : ContentProvider() {
                 Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
             }
 
+            ConfigContract.METHOD_EMOJI_VERSION -> {
+                val version = emojiVersion(context)
+                Bundle().apply {
+                    putBoolean(ConfigContract.KEY_OK, true)
+                    putString(ConfigContract.KEY_VERSION, version)
+                }
+            }
+
+            ConfigContract.METHOD_PUT_EMOJI_CHUNK -> {
+                val version = extras?.getString(ConfigContract.KEY_VERSION)
+                val bytes = extras?.getByteArray(ConfigContract.KEY_BYTES)
+                val index = extras?.getInt(ConfigContract.KEY_INDEX, -1) ?: -1
+                val total = extras?.getInt(ConfigContract.KEY_TOTAL, -1) ?: -1
+                val offset = extras?.getLong(ConfigContract.KEY_OFFSET, -1L) ?: -1L
+                if (version.isNullOrBlank() || bytes == null || index < 0 || total <= 0 || offset < 0) {
+                    Bundle().apply { putBoolean(ConfigContract.KEY_OK, false) }
+                } else {
+                    val ok = putEmojiChunk(context, version, index, total, offset, bytes)
+                    Bundle().apply { putBoolean(ConfigContract.KEY_OK, ok) }
+                }
+            }
+
             ConfigContract.METHOD_TOUCH_HOST -> {
                 val at = extras?.getLong(ConfigContract.KEY_TIME) ?: System.currentTimeMillis()
                 ConfigStore.update(context) { config -> config.copy(hostAliveAt = at) }
@@ -165,6 +200,74 @@ class ConfigProvider : ContentProvider() {
             else -> Bundle().apply { putBoolean(ConfigContract.KEY_OK, false) }
         }
     }
+
+    private fun emojiRoot(context: Context) = java.io.File(context.filesDir, "emoji")
+
+    private fun emojiVersion(context: Context): String? =
+        runCatching {
+            val file = java.io.File(emojiRoot(context), "version")
+            if (file.isFile) file.readText().trim().takeIf { it.isNotEmpty() } else null
+        }.getOrNull()
+
+    private fun putEmojiChunk(
+        context: Context,
+        version: String,
+        index: Int,
+        total: Int,
+        offset: Long,
+        chunk: ByteArray,
+    ): Boolean =
+        runCatching {
+            val root = emojiRoot(context)
+            root.mkdirs()
+            val dir = java.io.File(root, version)
+            val part = java.io.File(root, version + ".zip.part")
+            if (index == 0) {
+                root.listFiles()?.forEach { file -> if (file != dir && file != part) file.deleteRecursively() }
+                dir.deleteRecursively()
+                part.delete()
+            }
+            java.io.RandomAccessFile(part, "rw").use { raf ->
+                raf.seek(offset)
+                raf.write(chunk)
+            }
+            if (index == total - 1) {
+                java.util.zip.ZipInputStream(part.inputStream()).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        if (entry.isDirectory) continue
+                        val out = java.io.File(dir, entry.name)
+                        out.parentFile?.mkdirs()
+                        out.outputStream().use { zip.copyTo(it) }
+                    }
+                }
+                // 校验：catalog 能解析且每张图都在，才认这个版本
+                val ok = verifyEmojiDir(dir)
+                if (ok) {
+                    part.delete()
+                    java.io.File(root, "version").writeText(version)
+                } else {
+                    dir.deleteRecursively()
+                }
+                ok
+            } else {
+                true
+            }
+        }.getOrDefault(false)
+
+    /** 解压完整性校验：catalog.json 可解析，且每个条目对应的图片文件存在。 */
+    private fun verifyEmojiDir(dir: java.io.File): Boolean =
+        runCatching {
+            val catalog = java.io.File(dir, "catalog.json")
+            if (!catalog.isFile) return false
+            val array = org.json.JSONArray(catalog.readText())
+            if (array.length() == 0) return false
+            for (i in 0 until array.length()) {
+                val file = array.optJSONObject(i)?.optString("file").orEmpty()
+                if (file.isBlank() || !java.io.File(dir, file).isFile) return false
+            }
+            true
+        }.getOrDefault(false)
 
     override fun query(
         uri: Uri,

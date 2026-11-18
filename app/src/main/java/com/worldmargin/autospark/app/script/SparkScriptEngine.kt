@@ -107,6 +107,8 @@ object SparkScriptEngine {
         val macroNames: String = "{}",
         /** 按 id 取信息的数据：`{conversations:{id:..}, templates:{id:..}, macros:{id:..}}`。 */
         val info: String = "{}",
+        /** 抖音表情目录：`[{code,name,pinyin}]`。 */
+        val emojis: String = "[]",
         /**
          * 预览 / 试算模式：**不触发任何会改数据的动作**
          *（写变量、删变量、挂载 / 摘掉宏），只把文案算出来。
@@ -227,6 +229,7 @@ object SparkScriptEngine {
             ScriptableObject.putProperty(state, "tplJson", env.templateInfo)
             ScriptableObject.putProperty(state, "namesJson", env.macroNames)
             ScriptableObject.putProperty(state, "infoJson", env.info)
+        ScriptableObject.putProperty(state, "emojisJson", env.emojis)
             ScriptableObject.putProperty(state, "preview", env.preview)
             ScriptableObject.putProperty(state, "convJson", env.conversations)
             ScriptableObject.putProperty(scope, SANDBOX_STATE_VAR, state)
@@ -432,8 +435,8 @@ object SparkScriptEngine {
         listOf(
             Doc(
                 "getAllConversation",
-                "filter?: SparkConversationFilter",
-                "本轮会话（SparkConversation[]）；对象逐项相等 / 数组任一 / 函数判断；tags.include、tags.except 按标签筛（内层交集、外层并集）",
+                "filter?: (conversation) => boolean",
+                "本轮会话（SparkConversation[]）；不传返回全部，传函数逐项过滤；对象筛选（含 tags.include/except）仅为兼容保留，下个版本移除",
                 "SparkConversation[]",
                 SYSTEM_OBJ,
             ),
@@ -596,6 +599,30 @@ object SparkScriptEngine {
           return ["", true];
         }
         __sb.info = (__sb.infoJson && __sb.infoJson.length > 1) ? JSON.parse(__sb.infoJson) : {};
+        __sb.emojis = (__sb.emojisJson && __sb.emojisJson.length > 2) ? JSON.parse(__sb.emojisJson) : [];
+        function __emojiHit(item, kw){
+          if (!kw) return true;
+          var code = String(item.code || "").toLowerCase();
+          var name = String(item.name || "").toLowerCase();
+          var pinyin = String(item.pinyin || "").toLowerCase();
+          return code.indexOf(kw) >= 0 || name.indexOf(kw) >= 0 || pinyin.indexOf(kw) >= 0;
+        }
+        ctx.emoji = {
+          /** 全部表情：`[{code, name, pinyin}]`。 */
+          list: function(){ return __sb.emojis.slice(); },
+          /** 模糊查找：名字 / 表情码 / 拼音（如 "xiao" 能匹配 微笑 weixiao）。 */
+          find: function(keyword){
+            var kw = String(keyword || "").trim().toLowerCase();
+            if (!kw) return __sb.emojis.slice();
+            return __sb.emojis.filter(function(item){ return __emojiHit(item, kw); });
+          },
+          /** 从匹配结果里随机取一个表情对象（没有返回 null）。 */
+          random: function(keyword){
+            var list = this.find(keyword);
+            if (!list.length) return null;
+            return list[Math.floor(Math.random() * list.length)];
+          }
+        };
         function __requireMacroId(id){
           var table = (__sb.info && __sb.info.macros) ? __sb.info.macros : null;
           if (!table) return;
@@ -608,10 +635,8 @@ object SparkScriptEngine {
           var hit = table[String(id)];
           return hit || null;
         }
-        // 会话筛选：参数可以是函数（逐项判断），也可以是对象
-        //（每个键都要相等；值是数组表示「其中之一」；值是函数表示自定义判断）
-        // tags: { include, except } 是标签的两级条件：内层数组 = 交集（都要有），
-        // 外层数组 = 并集（任一组成立即可）；元素可以是标签 id 或名字
+        // 兼容层：旧的对象筛选（tags.include/except、字段相等/数组任一）保留一个版本，
+        // 新脚本请直接用函数过滤；下一个版本会移除对象写法。
         function __tagHit(item, tag){
           var list = item.tags || [];
           for (var i = 0; i < list.length; i++){
@@ -622,7 +647,6 @@ object SparkScriptEngine {
         }
         function __tagGroups(value){
           if (!value || !value.length) return [];
-          // 一维数组 = 单个交集组；二维数组 = 多个交集组取并集
           return (typeof value[0] === "string") ? [value] : value;
         }
         function __matchTagGroups(item, groups){
@@ -646,7 +670,7 @@ object SparkScriptEngine {
             if (!Object.prototype.hasOwnProperty.call(filter, key)) continue;
             if (key === "tags") continue;
             var want = filter[key];
-            if (typeof want === "function"){ if (!want(item)) return false; continue; }
+            if (typeof want === "function"){ if (!want(item[key])) return false; continue; }
             var actual = item[key];
             if (Object.prototype.toString.call(want) === "[object Array]"){
               if (want.indexOf(actual) < 0) return false;
@@ -665,6 +689,7 @@ object SparkScriptEngine {
         ctx.system = {
           getAllConversation: function(filter){
             if (typeof filter === "function") return __sb.convs.filter(filter);
+            // 兼容：对象筛选保留一个版本，下个版本移除
             return __sb.convs.filter(function(item){ return __matchConversation(item, filter); });
           },
           getConversation: function(id){ return __lookup("conversations", id); },

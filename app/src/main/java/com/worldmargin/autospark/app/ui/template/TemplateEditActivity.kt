@@ -37,6 +37,7 @@ import com.worldmargin.autospark.app.ui.common.UiKit.titleBar
 import java.util.UUID
 import com.worldmargin.autospark.app.editor.SparkEditor
 import com.worldmargin.autospark.app.editor.SparkEditors
+import com.worldmargin.autospark.app.ui.common.stickerButton
 import com.worldmargin.autospark.app.ui.macro.MacroPicker
 import com.worldmargin.autospark.app.ui.settings.SparkPreview
 import com.worldmargin.autospark.app.ui.variable.VariableListActivity
@@ -104,6 +105,7 @@ class TemplateEditActivity : Activity() {
                 addView(iconButton(UiKit.Icons.PREVIEW, "", primary = true, compact = true, hint = "预览") { showPreview() })
 
                 addView(pasteButton(editor))
+            addView(stickerButton(editor))
                 addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
                 if (existed) {
                     addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })

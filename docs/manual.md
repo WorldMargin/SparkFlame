@@ -278,11 +278,14 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 
 | 调用 | 说明 |
 | --- | --- |
-| `ctx.system.getAllConversation(filter?)` | 本轮可见的会话数组，可按条件筛（见下） |
+| `ctx.system.getAllConversation(filter?)` | 本轮可见的会话数组；推荐传函数逐项过滤，对象筛选仅兼容保留 |
 | `ctx.system.getConversation(id)` | 按会话 id 取详细信息，没有返回 `null` |
 | `ctx.system.getTemplate(id)` | 按模板 id 取：`{ id, name, body, childs, isBuiltin }` |
 | `ctx.system.getMacro(id)` | 按宏 id 取：`{ id, name, body, templates, conversations }` |
 | `ctx.system.getMacros()` | 所有宏的数组：`{ id, name, appliesTo, templateOnly }` |
+| `ctx.emoji.list()` | 全部抖音表情：`[{ code, name, pinyin }]` |
+| `ctx.emoji.find(keyword?)` | 模糊查找：名字 / 表情码 / 拼音（`xiao` 能匹配「微笑 weixiao」） |
+| `ctx.emoji.random(keyword?)` | 从查找结果里随机取一个表情对象，没有返回 `null` |
 | `ctx.system.mountMacro(id, target?)` | 按宏 **id** 挂到指定目标（不传 = 当前会话） |
 | `ctx.system.unmountMacro(id, target?)` | 按宏 **id** 从指定目标摘掉 |
 | `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
@@ -313,7 +316,7 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 
 `getConversation(id)` 额外带 `template` / `parent` / `macros` 三块。
 
-**筛选**：参数可以是对象，也可以是函数；返回类型都是 `SparkConversation[]`（新数组，不改原列表）。
+**筛选**：推荐传函数 `function (c) { return ... }`；对象写法（含 `tags.include/except`）仅为兼容保留，下个版本移除。返回类型都是 `SparkConversation[]`（新数组，不改原列表）。
 
 对象里能用的键（就是会话字段；值的写法见下表）：
 
@@ -540,9 +543,12 @@ ctx.builtin.countdown(target)         距目标日期还有几天（已过为负
 ctx.builtin.nextNewYear()             下一个元旦的日期字符串
 ctx.builtin.untilNewYear()            距下一个元旦还有几天
 ctx.builtin.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
-ctx.system.getAllConversation(filter?) 本轮会话，返回 SparkConversation[]；filter 传对象按字段筛（如 {willSend:true}），也可以传函数逐项判断
+ctx.system.getAllConversation(filter?) 本轮会话，返回 SparkConversation[]；filter 推荐传函数逐项判断（对象筛选仅兼容保留）
 ctx.system.getConversation(id)        按会话 id 取详细信息
 ctx.system.getMacros()                 所有宏的数组（id / name / appliesTo / templateOnly）
+ctx.emoji.list()                       全部抖音表情 [{code,name,pinyin}]
+ctx.emoji.find(keyword)                按名字/表情码/拼音模糊查找
+ctx.emoji.random(keyword)              从查找结果里随机取一个（没有返回 null）
 ctx.registerCallback(function (res) { ... }) 注册发送结果回调：res = {id, result, reason?}
   （id 是会话 id；result 为 Succeed / Skipped / Failed）
 

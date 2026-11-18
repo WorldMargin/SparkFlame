@@ -104,6 +104,10 @@ class MonacoSparkEditor(
             WebViewAssetLoader
                 .Builder()
                 .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(activity))
+                .addPathHandler(
+                    "/files/emoji/",
+                    WebViewAssetLoader.InternalStoragePathHandler(activity, java.io.File(activity.filesDir, "emoji")),
+                )
                 .build()
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
@@ -235,6 +239,10 @@ class MonacoSparkEditor(
 
     /** 页面回调（JS 线程），统一切回主线程处理。 */
     private inner class Bridge {
+        /** 表情码 → 预览字形，供 stickers.js 画内联预览。 */
+        @JavascriptInterface
+        fun stickerMap(): String = com.worldmargin.autospark.app.ui.common.DouyinStickers.previewMapJson(activity)
+
         @JavascriptInterface
         fun onReady() {
             container.post {

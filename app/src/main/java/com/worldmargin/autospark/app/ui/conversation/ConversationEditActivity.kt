@@ -48,6 +48,7 @@ import com.worldmargin.autospark.app.ui.common.UiKit.text
 import com.worldmargin.autospark.app.ui.common.UiKit.titleBar
 import com.worldmargin.autospark.app.editor.SparkEditor
 import com.worldmargin.autospark.app.editor.SparkEditors
+import com.worldmargin.autospark.app.ui.common.stickerButton
 import com.worldmargin.autospark.app.ui.macro.MacroPicker
 import com.worldmargin.autospark.app.ui.settings.SparkPreview
 import com.worldmargin.autospark.app.ui.variable.VariableListActivity
@@ -457,6 +458,7 @@ class ConversationEditActivity : Activity() {
         actionRow {
             addView(iconButton(UiKit.Icons.PREVIEW, "", compact = true, hint = "预览") { showPreview() })
             addView(pasteButton(editor))
+            addView(stickerButton(editor))
             addView(iconButton(UiKit.Icons.WAND, "", compact = true, hint = "格式化") { editor.format() })
             addView(iconButton(UiKit.Icons.PLUG, "", compact = true, hint = "挂载宏") { pickMacros() })
             // 这个会话自己的变量（同名会覆盖父模板的）：变量页

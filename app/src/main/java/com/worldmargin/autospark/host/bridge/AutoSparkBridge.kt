@@ -101,8 +101,53 @@ object AutoSparkBridge {
             templateInfo = templateInfoJson(config, conversationId),
             macroNames = macroNamesJson(config),
             info = infoJson(config, conversations, only, ignoreSentToday),
+            emojis = emojiCatalogJson(),
             preview = false,
         )
+
+    /** 表情目录 JSON（`[{code,name,pinyin}]`），进程内缓存一次。 */
+    @Volatile
+    private var emojiCatalogCache: String? = null
+
+    private fun emojiCatalogJson(): String {
+        emojiCatalogCache?.let { return it }
+        val context = HostRuntime.context ?: return "[]"
+        val built =
+            runCatching {
+                val root = java.io.File(context.dataDir, "small_emoji_res")
+                val emojiDir =
+                    root.listFiles()
+                        ?.mapNotNull { java.io.File(it, "emoji_android").takeIf { d -> d.isDirectory } }
+                        ?.firstOrNull() ?: return@runCatching "[]"
+                val info = java.io.File(emojiDir, "info.json")
+                if (!info.isFile) return@runCatching "[]"
+                val stickers = org.json.JSONObject(info.readText()).optJSONArray("stickers") ?: return@runCatching "[]"
+                val staticDir = java.io.File(emojiDir, "static")
+                val array = org.json.JSONArray()
+                for (i in 0 until stickers.length()) {
+                    val item = stickers.optJSONObject(i) ?: continue
+                    if (item.optInt("hide", 0) == 1) continue
+                    val uri = item.optString("uri")
+                    if (uri.isBlank() || !java.io.File(staticDir, uri).isFile) continue
+                    var name = item.optString("show_name").trim()
+                    val display = item.optString("display_name").trim()
+                    if (name.isEmpty() && display.startsWith("[") && display.endsWith("]")) {
+                        name = display.substring(1, display.length - 1)
+                    }
+                    if (name.isEmpty()) continue
+                    val code = if (display.startsWith("[") && display.endsWith("]")) display else "[$name]"
+                    array.put(
+                        org.json.JSONObject()
+                            .put("code", code)
+                            .put("name", name)
+                            .put("pinyin", uri.substringBeforeLast(".")),
+                    )
+                }
+                array.toString()
+            }.getOrDefault("[]")
+        emojiCatalogCache = built
+        return built
+    }
 
     /** 宏 id → 名字（`ctx.macro.name` 用）。 */
     private fun macroNamesJson(config: SparkConfig): String {
@@ -724,7 +769,9 @@ object AutoSparkBridge {
         application.registerActivityLifecycleCallbacks(
             object : android.app.Application.ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) = Unit
-                override fun onActivityResumed(activity: android.app.Activity) = Unit
+                override fun onActivityResumed(activity: android.app.Activity) {
+                    runCatching { com.worldmargin.autospark.host.HostNotice.maybeShow(activity) }
+                }
 
                 override fun onActivityPaused(activity: android.app.Activity) = Unit
 
@@ -1071,12 +1118,106 @@ object AutoSparkBridge {
             .put("failed", failed)
     }
 
+    /**
+     * 把抖音自己的小表情资源同步给模块 App。
+     *
+     * 资源随抖音版本变化，所以不打包：宿主启动时比对版本，变了就分片推给模块 App，
+     * App 写在 files/emoji/<version>/ 下，编辑器面板直接读这份缓存。
+     */
+    private fun syncEmojiAssets(context: Context) {
+        runCatching {
+            val root = java.io.File(context.dataDir, "small_emoji_res")
+            val emojiDir =
+                root.listFiles()
+                    ?.mapNotNull { java.io.File(it, "emoji_android").takeIf { d -> d.isDirectory } }
+                    ?.firstOrNull() ?: return
+            val info = java.io.File(emojiDir, "info.json")
+            if (!info.isFile) return
+            val json = org.json.JSONObject(info.readText())
+            val version = json.optString("id")
+            if (version.isBlank()) return
+            if (ConfigClient.emojiVersion(context) == version) return
+            val stickers = json.optJSONArray("stickers") ?: return
+            val staticDir = java.io.File(emojiDir, "static")
+            val catalog = org.json.JSONArray()
+            val files = mutableListOf<Pair<String, java.io.File>>()
+            for (i in 0 until stickers.length()) {
+                val item = stickers.optJSONObject(i) ?: continue
+                if (item.optInt("hide", 0) == 1) continue
+                val uri = item.optString("uri")
+                if (uri.isBlank()) continue
+                val file = java.io.File(staticDir, uri)
+                if (!file.isFile) continue
+                var name = item.optString("show_name").trim()
+                val display = item.optString("display_name").trim()
+                if (name.isEmpty() && display.startsWith("[") && display.endsWith("]")) {
+                    name = display.substring(1, display.length - 1)
+                }
+                if (name.isEmpty()) continue
+                val code = if (display.startsWith("[") && display.endsWith("]")) display else "[$name]"
+                catalog.put(org.json.JSONObject().put("code", code).put("name", name).put("file", uri))
+                files += uri to file
+            }
+            if (files.isEmpty()) return
+
+            val buffer = java.io.ByteArrayOutputStream()
+            java.util.zip.ZipOutputStream(buffer).use { zip ->
+                zip.putNextEntry(java.util.zip.ZipEntry("catalog.json"))
+                zip.write(catalog.toString().toByteArray())
+                zip.closeEntry()
+                files.forEach { (name, file) ->
+                    zip.putNextEntry(java.util.zip.ZipEntry(name))
+                    zip.write(file.readBytes())
+                    zip.closeEntry()
+                }
+            }
+            val bytes = buffer.toByteArray()
+            val chunkSize = 400 * 1024
+            val total = (bytes.size + chunkSize - 1) / chunkSize
+            com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在更新表情 0%）")
+            var lastShown = 0
+            var sentChunks = 0
+            for (index in 0 until total) {
+                val from = index * chunkSize
+                val to = minOf(from + chunkSize, bytes.size)
+                val piece = bytes.copyOfRange(from, to)
+                var ok = false
+                // 每片最多重试 3 次；写入按 offset 覆盖，重试不会把 zip 写坏
+                for (attempt in 1..3) {
+                    if (ConfigClient.putEmojiChunk(context, version, index, total, from.toLong(), piece)) {
+                        ok = true
+                        break
+                    }
+                    runCatching { Thread.sleep(200L) }
+                }
+                if (!ok) {
+                    HostTrace.add(context, "表情资源同步中断（第 ${index + 1}/$total 片）")
+                    // 首片就失败通常是模块 App 处于停用状态：静默等下次启动重试
+                    if (sentChunks > 0) {
+                        com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：表情更新中断，下次重试）")
+                    }
+                    return
+                }
+                sentChunks++
+                val percent = ((index + 1) * 100) / total
+                if (percent - lastShown >= 10 || index == total - 1) {
+                    lastShown = percent
+                    com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在更新表情 $percent%）")
+                }
+            }
+            com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：表情已更新，共 ${files.size} 个）")
+            HostTrace.add(context, "表情资源已同步：${files.size} 个（版本 $version，$total 片）")
+        }.onFailure { ModLog.w("表情资源同步失败：$it") }
+    }
+
     /** 打开抖音后延迟自动执行一次（总开关关闭时内部直接返回），并刷新会话快照。 */
     fun scheduleOnAppStart() {
         val context = HostRuntime.context ?: return
         Thread(
             {
                 wakeModule(context)
+                runCatching { syncEmojiAssets(context) }
+                runCatching { syncEmojiAssets(context) }
                 HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
                 com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")
                 runCatching {

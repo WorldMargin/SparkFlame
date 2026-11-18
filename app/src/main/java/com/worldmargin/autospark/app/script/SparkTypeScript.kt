@@ -165,6 +165,8 @@ object SparkTypeScript {
         }
         builder.append("}\n")
         builder.append("interface SparkCtx {\n")
+        builder.append("\t/** 抖音表情目录：list / find(模糊查找) / random(随机取一个) */\n")
+        builder.append("\temoji: { list(): Array<{ code: string; name: string; pinyin: string }>; find(keyword?: string): Array<{ code: string; name: string; pinyin: string }>; random(keyword?: string): { code: string; name: string; pinyin: string } | null };\n")
         builder.append("\t/** 要发送的文案：逐行 push，空列表 = 不发 */\n")
         builder.append("\tresult: string[];\n")
         builder.append("\t/** 注册会话结果回调：发送结束后调用，参数是 { id, result, reason? } */\n")

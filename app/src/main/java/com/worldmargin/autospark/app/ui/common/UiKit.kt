@@ -35,6 +35,7 @@ object UiKit {
     /** 图标字体（VSCode codicon，随模块打包，离线可用）：名字 → 码点。 */
     object Icons {
         const val FIRE = "\ueaf2"
+        const val REACTIONS = "\ueb35"
         const val TEMPLATE = "\ueaf0"
         const val CODE = "\ueac4"
         const val GEAR = "\ueb51"

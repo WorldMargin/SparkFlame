@@ -3818,7 +3818,6 @@ class SparkSettingsActivity : Activity() {
     private fun buildSegmentsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
-        body.addView(sectionTitle("贴纸 push 行为"))
         val modes =
             listOf(
                 "split" to "贴纸前先 commit 前面的文本",
@@ -3837,7 +3836,6 @@ class SparkSettingsActivity : Activity() {
                         ConfigStore.update(this@SparkSettingsActivity) {
                             it.copy(stickerPushMode = modes[index].first)
                         }
-                        recreate()
                     },
                 )
                 addView(
@@ -3849,7 +3847,6 @@ class SparkSettingsActivity : Activity() {
                         ConfigStore.update(this@SparkSettingsActivity) {
                             it.copy(maxCommits = listOf(1, 2, 3, 5, 10)[index])
                         }
-                        recreate()
                     },
                 )
             },

@@ -215,6 +215,8 @@ data class SparkConfig(
     val resRefreshOnModule: Boolean = true,
     /** 抖音版本变化后刷新表情/贴纸目录。 */
     val resRefreshOnDouyin: Boolean = true,
+    /** 过期后是否刷新（关闭时不按时间刷新）。 */
+    val resRefreshOnExpire: Boolean = false,
     /** 超过多少天未刷新则打开时刷新（0 = 不按时间刷新）。 */
     val resRefreshDays: Int = 7,
     /**
@@ -810,6 +812,7 @@ object ConfigCodec {
     private const val KEY_STICKER_PUSH_MODE = "stickerPushMode"
     private const val KEY_RES_MODULE = "resRefreshOnModule"
     private const val KEY_RES_DOUYIN = "resRefreshOnDouyin"
+    private const val KEY_RES_ON_EXPIRE = "resRefreshOnExpire"
     private const val KEY_RES_DAYS = "resRefreshDays"
     private const val KEY_MAX_COMMITS = "maxCommits"
     private const val KEY_HOST_NOTE = "hostNote"
@@ -986,6 +989,7 @@ object ConfigCodec {
             .put(KEY_STICKER_PUSH_MODE, config.stickerPushMode)
             .put(KEY_RES_MODULE, config.resRefreshOnModule)
             .put(KEY_RES_DOUYIN, config.resRefreshOnDouyin)
+            .put(KEY_RES_ON_EXPIRE, config.resRefreshOnExpire)
             .put(KEY_RES_DAYS, config.resRefreshDays)
             .put(KEY_MAX_COMMITS, config.maxCommits)
             .put(KEY_HOST_NOTE, config.hostNote)
@@ -1155,6 +1159,7 @@ object ConfigCodec {
             stickerPushMode = root.optString(KEY_STICKER_PUSH_MODE, "split").ifBlank { "split" },
             resRefreshOnModule = root.optBoolean(KEY_RES_MODULE, true),
             resRefreshOnDouyin = root.optBoolean(KEY_RES_DOUYIN, true),
+            resRefreshOnExpire = root.optBoolean(KEY_RES_ON_EXPIRE, false),
             resRefreshDays = root.optInt(KEY_RES_DAYS, 7).coerceIn(0, 90),
             maxCommits = root.optInt(KEY_MAX_COMMITS, 3).coerceIn(1, 20),
             hostNote = root.optString(KEY_HOST_NOTE),

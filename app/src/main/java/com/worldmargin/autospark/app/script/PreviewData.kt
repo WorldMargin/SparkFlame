@@ -21,6 +21,7 @@ object PreviewData {
     fun env(
         config: SparkConfig,
         conversationId: String?,
+        context: android.content.Context? = null,
     ): SparkScriptEngine.SandboxEnv {
         val today = dayFormat.format(Date())
         val selectedIds = config.selectedIds()
@@ -96,8 +97,18 @@ object PreviewData {
             templateInfo = templateInfo.toString(),
             macroNames = macroNames(config),
             info = info.toString(),
+            stickers = stickerCatalog(context),
             preview = true,
         )
+    }
+
+    /** 模块侧缓存的互动贴纸目录（预览用）。 */
+    private fun stickerCatalog(context: android.content.Context?): String {
+        if (context == null) return "[]"
+        return runCatching {
+            val file = java.io.File(context.filesDir, "sticker_catalog.json")
+            if (!file.isFile) "[]" else file.readText()
+        }.getOrDefault("[]")
     }
 
     /** 数组按某个字段转成 `{id: 对象}` 的表，供 `getXxx(id)` 查。 */

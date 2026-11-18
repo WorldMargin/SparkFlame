@@ -286,6 +286,9 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 | `ctx.emoji.list()` | 全部抖音表情：`[{ code, name, pinyin }]` |
 | `ctx.emoji.find(keyword?)` | 模糊查找：名字 / 表情码 / 拼音（`xiao` 能匹配「微笑 weixiao」） |
 | `ctx.emoji.random(keyword?)` | 从查找结果里随机取一个表情对象，没有返回 `null` |
+| `sticker(name)`（全局） | 取互动贴纸对象：`{type,name,static,animate}`，找不到返回 `null` |
+| `ctx.sticker.list(filter?)` | 全部互动贴纸：`[{name,static,animate}]`；可传函数自行筛选 |
+| `ctx.sticker.get(name)` | 按名字精确取一个贴纸对象（等同全局 `sticker(name)`） |
 | `ctx.commit()` | 把当前 `ctx.result` 缓冲提交为一段，返回 `{ handle, index }`；可多次调用实现多段发送 |
 | `ctx.submit()` | 提交当前缓冲为最后一段并结束脚本，队列继续发送 |
 | `ctx.exit()` | 结束脚本并**放弃本轮全部发送**（已 commit 的段也不发） |
@@ -385,6 +388,46 @@ var need = ctx.system.getAllConversation(function (c) { return c.autoSend && c.d
 ```
 
 
+
+### 表情与贴纸抽屉
+
+编辑器工具栏的 reactions 按钮打开底部抽屉，分「表情 / 贴纸」两个 tab：
+
+- 表情：点击插入 `[表情名]` 文本码
+- 贴纸：点击插入 `sticker("名字")` 代码
+- 抽屉支持搜索、拖动手柄调高度、点外部或下拉收起
+
+### 预览页
+
+模板、会话、变量试算的预览统一进入独立预览页：
+
+- 按发送分段展示（文本段 / 贴纸段）
+- `[表情名]` 渲染成表情图
+- 互动贴纸显示缩略图与名字
+
+### 资源刷新时机
+
+「设置 → 更多 → 运行设置 → 资源刷新时机」：
+
+- 模块更新时刷新（默认开）
+- 抖音更新时刷新（默认开）
+- 过期后刷新（默认关），配合 1 / 3 / 7 / 15 / 30 天
+
+表情与贴纸目录共用这套时机，宿主只在满足条件时重新同步。
+
+### 互动贴纸 API
+
+```js
+// 全局函数：取对象后直接 push，等价于 push({type:"sticker", name:"比心"})
+ctx.result.push(sticker("比心"));
+
+// 遍历 / 自己筛选
+var all = ctx.sticker.list();
+var preferred = ctx.sticker.list(function (it) { return it.name.indexOf("火") >= 0; });
+```
+
+`sticker()` 返回 `{ type:"sticker", name, static, animate }`；名字不在目录里时返回 `null`，脚本里记得判空。
+
 ### 多段发送与贴纸
 
 `ctx.result` 默认作为**一段**文本发送；调用 `ctx.commit()` 可以切段，一个会话最多发送「设置 → 发送分段 → 每会话最多 commit 次数」段，超出的内容由引擎合并到最后一段。
@@ -408,7 +451,7 @@ ctx.registerCallback(function (res) {
 ctx.result.push({ type: "sticker", name: "续火花" });
 ```
 
-贴纸入队位置由「设置 → 发送分段 → 贴纸 push 行为」决定：
+贴纸入队位置由「设置 → 更多 → 运行设置 → 贴纸 push 行为」决定：
 
 | 模式 | 行为 |
 | --- | --- |
@@ -417,7 +460,9 @@ ctx.result.push({ type: "sticker", name: "续火花" });
 | 贴纸放到最后 | 脚本结束时贴纸排在所有段之后 |
 | 贴纸放到最前 | 脚本结束时贴纸排在所有段之前 |
 
-注意：贴纸的**网络发送尚未实现**，当前版本里贴纸段会以「贴纸发送尚未实现」失败，不会影响同轮的文本段；分段框架、设置项和回执已经就位。
+贴纸发送需要名字在宿主同步下来的互动表情目录里（目录来自抖音配置，随「运行设置 → 资源刷新时机」更新）。名字不在目录里时，该段失败并给出原因，不影响同轮文本段。
+
+每个会话最多提交多少段由「运行设置 → commit 上限」决定，超出部分自动并入最后一段。
 
 **`getConversation(id)` 的完整用法**
 

@@ -605,18 +605,21 @@ class ConversationEditActivity : Activity() {
         val vars = config.templateVarsFor(conversationId)
         val rendered =
             runCatching {
-                SparkScriptEngine.render(
-                        TemplateVarPrelude.of(vars) + program,
-                        SparkPreview.variables(snapshot),
-                        PreviewData.env(config, conversationId),
-                    )
-            }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
-        AlertDialog
-            .Builder(this)
-            .setTitle("预览（${snapshot?.displayName ?: "无缓存，用占位值"}）")
-            .setMessage(rendered)
-            .setPositiveButton("好", null)
-            .show()
+                SparkScriptEngine.renderSegments(
+                    TemplateVarPrelude.of(vars) + program,
+                    SparkPreview.variables(snapshot),
+                    PreviewData.env(config, conversationId, this),
+                )
+            }.getOrNull()
+        if (rendered != null) {
+            com.worldmargin.autospark.app.ui.preview.PreviewActivity.open(
+                this,
+                "预览（${snapshot?.displayName ?: "无缓存，用占位值"}）",
+                rendered,
+            )
+        } else {
+            AlertDialog.Builder(this).setMessage("【预览失败】脚本执行出错").setPositiveButton("好", null).show()
+        }
     }
 
     override fun onDestroy() {

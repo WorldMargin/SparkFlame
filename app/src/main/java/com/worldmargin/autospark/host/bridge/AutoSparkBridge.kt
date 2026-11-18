@@ -103,6 +103,7 @@ object AutoSparkBridge {
             macroNames = macroNamesJson(config),
             info = infoJson(config, conversations, only, ignoreSentToday),
             emojis = emojiCatalogJson(),
+            stickers = stickerCatalogJson(),
             maxCommits = config.maxCommits,
             stickerPushMode = config.stickerPushMode,
             preview = false,
@@ -120,7 +121,9 @@ object AutoSparkBridge {
                 }.getOrDefault("")
             val at = meta?.optLong("at", 0L) ?: 0L
             val expired =
-                config.resRefreshDays > 0 && System.currentTimeMillis() - at > config.resRefreshDays * 86_400_000L
+                config.resRefreshOnExpire &&
+                    config.resRefreshDays > 0 &&
+                    System.currentTimeMillis() - at > config.resRefreshDays * 86_400_000L
             val need =
                 meta == null ||
                     (config.resRefreshOnModule && meta.optString("moduleVersion") != moduleVersion) ||
@@ -141,6 +144,16 @@ object AutoSparkBridge {
             ConfigClient.putStickers(context, arr.toString(), moduleVersion, douyinVersion)
         }.onFailure { ModLog.w("贴纸目录同步失败：$it") }
     }
+
+    /** 贴纸目录 JSON（`[{name,static,animate}]`），供脚本 sticker()/ctx.sticker 查询。 */
+    private fun stickerCatalogJson(): String =
+        runCatching {
+            val arr = org.json.JSONArray()
+            StickerCatalog.items(HostRuntime.context!!).forEach { item ->
+                arr.put(org.json.JSONObject().put("name", item.name).put("static", item.staticUrl).put("animate", item.animateUrl))
+            }
+            arr.toString()
+        }.getOrDefault("[]")
 
     /** 按名字生成互动表情 content（目录来自 keva 的 interactive_resource_config）。 */
     private fun stickerContentFor(
@@ -652,12 +665,14 @@ object AutoSparkBridge {
                             val cid = intent.getStringExtra("conversation_id").orEmpty()
                             Thread(
                                 {
+                                    val name = intent.getStringExtra("name").orEmpty()
+                                    val content =
+                                        stickerContentFor(context, name).ifBlank {
+                                            com.worldmargin.autospark.host.im.ImMsgBridge.XUHUOHUA_STICKER_CONTENT
+                                        }
                                     val result =
                                         runCatching {
-                                            com.worldmargin.autospark.host.im.ImMsgBridge.sendStickerJson(
-                                                cid,
-                                                com.worldmargin.autospark.host.im.ImMsgBridge.XUHUOHUA_STICKER_CONTENT,
-                                            )
+                                            com.worldmargin.autospark.host.im.ImMsgBridge.sendStickerJson(cid, content)
                                         }.getOrElse { "{\"ok\":false,\"error\":\"$it\"}" }
                                     runCatching {
                                         java.io.File(context.filesDir, "spark_sticker_send.json").writeText(result)

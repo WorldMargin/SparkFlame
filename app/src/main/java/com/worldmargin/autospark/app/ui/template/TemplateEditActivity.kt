@@ -214,20 +214,35 @@ class TemplateEditActivity : Activity() {
         val sample = SparkPreview.sample(config)
         // 变量用**当前正在编辑的**（还没保存也算），这样改完表达式直接能预览
         val vars = collectVariables()
-        val rendered =
+        val preview =
             runCatching {
-                SparkScriptEngine.render(
+                SparkScriptEngine.renderSegments(
                     TemplateVarPrelude.of(vars) + program,
                     SparkPreview.variables(sample),
-                    PreviewData.env(config, groupId),
+                    PreviewData.env(config, groupId, this),
                 )
-            }.getOrElse { "【预览失败】" + (it.message ?: it.toString()) }
-        AlertDialog
-            .Builder(this)
-            .setTitle("预览（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
-            .setMessage(rendered)
-            .setPositiveButton("好", null)
-            .show()
+            }.getOrNull()
+        if (preview != null) {
+            val arr = org.json.JSONArray()
+            preview.segments.forEach { seg ->
+                arr.put(org.json.JSONObject().put("kind", seg.kind).put("text", seg.text).put("name", seg.name))
+            }
+            if (preview.segments.isEmpty()) {
+                arr.put(org.json.JSONObject().put("kind", "text").put("text", preview.text))
+            }
+            startActivity(
+                android.content.Intent(this, com.worldmargin.autospark.app.ui.preview.PreviewActivity::class.java)
+                    .putExtra("title", "预览（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
+                    .putExtra("segments", arr.toString()),
+            )
+        } else {
+            AlertDialog
+                .Builder(this)
+                .setTitle("预览（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
+                .setMessage("【预览失败】脚本执行出错")
+                .setPositiveButton("好", null)
+                .show()
+        }
     }
 
     /** 标题栏右侧的保存动作。 */

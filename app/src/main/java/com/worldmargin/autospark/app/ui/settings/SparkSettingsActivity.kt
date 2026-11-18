@@ -3384,7 +3384,7 @@ class SparkSettingsActivity : Activity() {
         return runCatching { SparkScriptEngine.render(
                 com.worldmargin.autospark.app.script.TemplateVarPrelude.of(vars) + program,
                 sample,
-                PreviewData.env(config, SparkPreview.sampleAt(config, sampleIndex)?.conversationId),
+                PreviewData.env(config, SparkPreview.sampleAt(config, sampleIndex)?.conversationId, this),
             ) }
             .getOrElse { "（预览失败：" + (it.message ?: it.toString()) + "）" }
     }
@@ -3829,6 +3829,11 @@ class SparkSettingsActivity : Activity() {
                 addView(
                     switchRow("抖音更新时刷新", "抖音版本变化后重新同步", config.resRefreshOnDouyin) { checked ->
                         ConfigStore.update(this@SparkSettingsActivity) { it.copy(resRefreshOnDouyin = checked) }
+                    },
+                )
+                addView(
+                    switchRow("过期后刷新", "按下面的天数判断，开启才生效", config.resRefreshOnExpire) { checked ->
+                        ConfigStore.update(this@SparkSettingsActivity) { it.copy(resRefreshOnExpire = checked) }
                     },
                 )
                 addView(

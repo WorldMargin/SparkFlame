@@ -416,18 +416,21 @@ class VariableListActivity : Activity() {
             }
         val outcome =
             runCatching {
-                SparkScriptEngine.render(
+                SparkScriptEngine.renderSegments(
                     TemplateVarPrelude.of(vars) + pushes,
                     SparkPreview.variables(sample),
-                    PreviewData.env(config, sample?.conversationId),
+                    PreviewData.env(config, sample?.conversationId, this),
                 )
-            }
-        AlertDialog
-            .Builder(this)
-            .setTitle("试算（样例：${sample?.displayName ?: "无缓存，用占位值"}）")
-            .setMessage(outcome.getOrElse { "跑不通：\n" + (it.message ?: it.toString()) })
-            .setPositiveButton("好", null)
-            .show()
+            }.getOrNull()
+        if (outcome != null) {
+            com.worldmargin.autospark.app.ui.preview.PreviewActivity.open(
+                this,
+                "试算（样例：${sample?.displayName ?: "无缓存，用占位值"}）",
+                outcome,
+            )
+        } else {
+            AlertDialog.Builder(this).setMessage("跑不通：脚本执行出错").setPositiveButton("好", null).show()
+        }
     }
 
     private fun save() {

@@ -109,6 +109,8 @@ object SparkScriptEngine {
         val info: String = "{}",
         /** 抖音表情目录：`[{code,name,pinyin}]`。 */
         val emojis: String = "[]",
+        /** 互动贴纸目录：`[{name,static,animate}]`。 */
+        val stickers: String = "[]",
         /** 每个会话最多 commit 多少次（含贴纸段）。 */
         val maxCommits: Int = 3,
         /** 贴纸 push 行为：split / stickerOnly / appendLast / prependFirst。 */
@@ -245,6 +247,7 @@ object SparkScriptEngine {
             ScriptableObject.putProperty(state, "namesJson", env.macroNames)
             ScriptableObject.putProperty(state, "infoJson", env.info)
         ScriptableObject.putProperty(state, "emojisJson", env.emojis)
+            ScriptableObject.putProperty(state, "stickersJson", env.stickers)
             ScriptableObject.putProperty(state, "preview", env.preview)
             ScriptableObject.putProperty(state, "convJson", env.conversations)
             ScriptableObject.putProperty(scope, SANDBOX_STATE_VAR, state)
@@ -441,6 +444,13 @@ object SparkScriptEngine {
         }
         return Context.toString(result)
     }
+
+    /** 预览（分段版）：不触发任何修改，返回文本段与贴纸段。 */
+    fun renderSegments(
+        script: String,
+        values: Map<String, Any?>,
+        env: SandboxEnv,
+    ): Rendered = renderFull(script, values, env.copy(preview = true), "", "")
 
     /** 上下文成员说明：供界面展示、编辑器补全与类型定义生成。 */
     data class Doc(
@@ -738,6 +748,28 @@ object SparkScriptEngine {
         }
         __sb.info = (__sb.infoJson && __sb.infoJson.length > 1) ? JSON.parse(__sb.infoJson) : {};
         __sb.emojis = (__sb.emojisJson && __sb.emojisJson.length > 2) ? JSON.parse(__sb.emojisJson) : [];
+        __sb.stickers = (__sb.stickersJson && __sb.stickersJson.length > 2) ? JSON.parse(__sb.stickersJson) : [];
+        function __stickerOf(name){
+          var list = __sb.stickers || [];
+          for (var i = 0; i < list.length; i++){
+            if (String(list[i].name) === String(name)) {
+              return { type: "sticker", name: list[i].name, static: list[i].static, animate: list[i].animate };
+            }
+          }
+          return null;
+        }
+        // 全局内置：sticker("比心") → { type:"sticker", name, static, animate }，找不到返回 null
+        function sticker(name){ return __stickerOf(name); }
+        ctx.sticker = {
+          /** 全部互动贴纸：`[{name, static, animate}]`；可传函数自行筛选。 */
+          list: function(filter){
+            var list = (__sb.stickers || []).slice();
+            if (typeof filter === "function") return list.filter(function(it){ return filter(it); });
+            return list;
+          },
+          /** 按名字精确取一个贴纸对象，找不到返回 null。 */
+          get: function(name){ return __stickerOf(name); }
+        };
         function __emojiHit(item, kw){
           if (!kw) return true;
           var code = String(item.code || "").toLowerCase();

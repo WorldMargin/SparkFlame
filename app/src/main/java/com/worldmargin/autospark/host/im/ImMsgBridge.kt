@@ -37,6 +37,13 @@ object ImMsgBridge {
     /** 文本消息的协议类型（服务端协议枚举）。 */
     private const val MSG_TYPE_TEXT = 7
 
+    /** 互动贴纸消息类型。 */
+    private const val MSG_TYPE_STICKER = 5
+
+    /** 「续火花」互动贴纸 content（2026-11 抓包）。 */
+    const val XUHUOHUA_STICKER_CONTENT: String =
+        "{\"danmaku_id\":\"\",\"danmaku_text\":\"\",\"display_name\":\"续火花\",\"emoji_from\":\"lite\",\"id\":\"0\",\"emoji_source\":\"\",\"emoji_type\":\"lite_emoji\",\"height\":100,\"image_id\":0,\"image_type\":\"png\",\"match_uid\":\"\",\"message_reply_display_type\":0,\"package_id\":0,\"show_notice\":false,\"source_schema\":\"\",\"resource_type\":4,\"sticker_type\":12,\"top_desc_scene_type\":0,\"top_desc_uid_match\":\"\",\"updateConversationTime\":true,\"url\":{\"height\":100,\"data_size\":0,\"uri\":\"https://p11-sign.douyinpic.com/obj/im-resource/1687263281313-ts-e7bbade781abe88ab12e706e67?lk3s=91c5b7cb&x-expires=1826539200&x-signature=TasbOjG%2B%2FAdfp6nZEbbCU9HFfU0%3D&from=2445653963&s=im_111&se=false&sc=image&biz_tag=aweme_im&l=2026111820235546666AA86A9D8B36D1CC\",\"url_list\":[\"https://p11-sign.douyinpic.com/obj/im-resource/1687263281313-ts-e7bbade781abe88ab12e706e67?lk3s=91c5b7cb&x-expires=1826539200&x-signature=TasbOjG%2B%2FAdfp6nZEbbCU9HFfU0%3D&from=2445653963&s=im_111&se=false&sc=image&biz_tag=aweme_im&l=2026111820235546666AA86A9D8B36D1CC\"],\"width\":100},\"version\":\"2\",\"width\":100,\"createdAt\":0,\"is_card\":false,\"msgHint\":\"\",\"aweType\":507}"
+
     /** 图片消息的协议类型（content 含 inline_pic 缩略图与资源元数据）。 */
     private const val MSG_TYPE_IMAGE = 27
 
@@ -140,6 +147,39 @@ object ImMsgBridge {
      * @param conversationId 会话 ID
      * @param messageId 消息的服务端 ID（getMessages 结果的 msgId）
      */
+    /** 发送互动贴纸（msgType=5）：贴纸只靠 content JSON，不回填 contentObj。 */
+    fun sendStickerJson(
+        conversationId: String,
+        contentJson: String,
+    ): String {
+        if (conversationId.isBlank()) return errorJson("会话 ID 为空")
+        if (contentJson.isBlank()) return errorJson("贴纸内容为空")
+        val conversation = resolveConversation(conversationId) ?: return errorJson("会话不存在或未加载")
+        return runCatching {
+            val builder = createMessageBuilder() ?: return errorJson("消息构造器获取失败")
+            val methods = builder.javaClass.methods
+            methods.first { it.name == "conversation" && it.parameterCount == 1 }.invoke(builder, conversation)
+            methods.first { it.name == "msgType" && it.parameterCount == 1 }.invoke(builder, MSG_TYPE_STICKER)
+            methods.first { it.name == "content" && it.parameterCount == 1 }.invoke(builder, contentJson)
+            val message = methods.first { it.name == "build" && it.parameterCount == 0 }.invoke(builder)
+                ?: return errorJson("消息构造失败")
+            val now = System.currentTimeMillis()
+            @Suppress("UNCHECKED_CAST")
+            val ext = Reflect.getter(message, "getExt") as? MutableMap<String, String>
+            ext?.put("old_client_message_id", now.toString())
+            ext?.put("im_client_send_msg_time", now.toString())
+            ext?.put("a:ntp_ready", "0")
+            val utils = messageUtils() ?: return errorJson("消息发送工具获取失败")
+            val listener = SendListener(Class.forName(REQUEST_LISTENER, false, HostRuntime.requireClassLoader()))
+            utils.javaClass.methods.first { it.name == "sendMessage" && it.parameterCount == 3 }
+                .invoke(utils, message, HashMap<String, String>(), listener.proxy)
+            listener.await()?.let { return errorJson(it) }
+            val sent = listener.sentMessage ?: message
+            JSONObject().put("ok", true).put("conversationId", conversationId)
+                .put("msgId", (Reflect.getter(sent, "getMsgId") as? Number)?.toLong() ?: 0L).toString()
+        }.getOrElse { errorJson("$it") }
+    }
+
     fun revokeJson(
         conversationId: String,
         messageId: Long,
@@ -990,6 +1030,10 @@ object ImMsgBridge {
 
         // 消息正文：content 是序列化 JSON，按类型提取关键字段
         val content = Reflect.getter(msg, "getContent")?.toString() ?: ""
+        if (json.optInt("msgType") == 5) {
+            json.put("content", content)
+            json.put("contentClass", runCatching { Reflect.getter(msg, "getContentObj")?.javaClass?.name }.getOrNull() ?: "")
+        }
         if (content.isNotEmpty()) {
             val parsed = runCatching { JSONObject(content) }.getOrNull()
             if (parsed != null) {

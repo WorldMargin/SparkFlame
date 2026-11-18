@@ -513,6 +513,25 @@ object AutoSparkBridge {
         return RefreshOutcome(true, "${snapshots.size} 个会话")
     }
 
+    /** 临时：把最近 20 条 msgType=5 消息原文写到 files/spark_sticker_dump.json，供逆向贴纸结构。 */
+    private fun dumpSticker(
+        context: Context,
+        conversationId: String,
+    ) {
+        val result =
+            runCatching {
+                com.worldmargin.autospark.host.im.ImMsgBridge.getMessagesJson(
+                    conversationId,
+                    null,
+                    30,
+                    listOf(5),
+                )
+            }.getOrElse { "{\"ok\":false,\"error\":\"$it\"}" }
+        runCatching {
+            java.io.File(context.filesDir, "spark_sticker_dump.json").writeText(result)
+        }
+    }
+
     /**
      * 注册「刷新会话」与「立即发送」广播接收器（跑在抖音进程内）。
      *
@@ -543,6 +562,30 @@ object AutoSparkBridge {
                             Thread({ sendNowAndNotify(context, targets) }, "spark-send").apply { isDaemon = true }.start()
                         }
 
+                        "com.worldmargin.autospark.action.TEST_STICKER" -> {
+                            val cid = intent.getStringExtra("conversation_id").orEmpty()
+                            Thread(
+                                {
+                                    val result =
+                                        runCatching {
+                                            com.worldmargin.autospark.host.im.ImMsgBridge.sendStickerJson(
+                                                cid,
+                                                com.worldmargin.autospark.host.im.ImMsgBridge.XUHUOHUA_STICKER_CONTENT,
+                                            )
+                                        }.getOrElse { "{\"ok\":false,\"error\":\"$it\"}" }
+                                    runCatching {
+                                        java.io.File(context.filesDir, "spark_sticker_send.json").writeText(result)
+                                    }
+                                },
+                                "spark-sticker",
+                            ).start()
+                        }
+
+                        "com.worldmargin.autospark.action.DUMP_STICKER" -> {
+                            val cid = intent.getStringExtra("conversation_id").orEmpty()
+                            Thread({ dumpSticker(context, cid) }, "spark-dump").apply { isDaemon = true }.start()
+                        }
+
                         else -> Thread({ refreshAndNotify(context) }, "spark-refresh").apply { isDaemon = true }.start()
                     }
                 }
@@ -553,6 +596,8 @@ object AutoSparkBridge {
                 addAction(ConfigContract.ACTION_REFRESH_SNAPSHOT)
                 addAction(ConfigContract.ACTION_SEND_NOW)
                 addAction(ConfigContract.ACTION_PING_HOST)
+                addAction("com.worldmargin.autospark.action.DUMP_STICKER")
+                addAction("com.worldmargin.autospark.action.TEST_STICKER")
             }
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1105,11 +1150,34 @@ object AutoSparkBridge {
                             .put("reason", if (ok) "" else firstReason),
                     )
                 } else {
-                    if (firstReason.isEmpty()) firstReason = "贴纸发送尚未实现"
-                    segResults.put(
-                        JSONObject().put("handle", seg.handle).put("kind", "sticker").put("ok", false)
-                            .put("name", seg.name).put("reason", "贴纸发送尚未实现"),
-                    )
+                    val stickerContent =
+                        if (seg.name == "续火花") com.worldmargin.autospark.host.im.ImMsgBridge.XUHUOHUA_STICKER_CONTENT else ""
+                    if (stickerContent.isEmpty()) {
+                        if (firstReason.isEmpty()) firstReason = "暂不支持的贴纸：${seg.name}"
+                        segResults.put(
+                            JSONObject().put("handle", seg.handle).put("kind", "sticker").put("ok", false)
+                                .put("name", seg.name).put("reason", "暂不支持的贴纸"),
+                        )
+                    } else {
+                        val outcome =
+                            runCatching {
+                                JSONObject(
+                                    com.worldmargin.autospark.host.im.ImMsgBridge.sendStickerJson(
+                                        conversationId,
+                                        stickerContent,
+                                    ),
+                                )
+                            }.getOrNull()
+                        val ok = outcome != null && outcome.optBoolean("ok")
+                        if (!ok && firstReason.isEmpty()) {
+                            firstReason = outcome?.optString("error")?.takeIf { it.isNotBlank() } ?: "贴纸发送失败"
+                        }
+                        segResults.put(
+                            JSONObject().put("handle", seg.handle).put("kind", "sticker").put("ok", ok)
+                                .put("name", seg.name)
+                                .put("reason", if (ok) "" else (outcome?.optString("error") ?: "贴纸发送失败")),
+                        )
+                    }
                 }
             }
             val success = textOk && sentText

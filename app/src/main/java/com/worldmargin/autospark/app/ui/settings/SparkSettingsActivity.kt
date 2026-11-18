@@ -584,6 +584,7 @@ class SparkSettingsActivity : Activity() {
         config: SparkConfig,
         key: String,
     ): View {
+        if (key == SUB_SEGMENTS) return buildSegmentsPage(config)
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
         when (key) {
             SUB_OVERVIEW -> {
@@ -3814,6 +3815,55 @@ class SparkSettingsActivity : Activity() {
             .show()
     }
 
+    private fun buildSegmentsPage(config: SparkConfig): View {
+        val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
+
+        body.addView(sectionTitle("贴纸 push 行为"))
+        val modes =
+            listOf(
+                "split" to "贴纸前先 commit 前面的文本",
+                "stickerOnly" to "仅贴纸入队，文本继续累积",
+                "appendLast" to "贴纸放到最后",
+                "prependFirst" to "贴纸放到最前",
+            )
+        modes.forEach { (value, label) ->
+            body.addView(
+                segmentOptionRow(label, config.stickerPushMode == value) {
+                    ConfigStore.update(this) { it.copy(stickerPushMode = value) }
+                    recreate()
+                },
+            )
+        }
+
+        body.addView(sectionTitle("每会话最多 commit 次数"))
+        listOf(1, 2, 3, 5, 10).forEach { value ->
+            body.addView(
+                segmentOptionRow("$value 次（超出的内容合并到最后一段）", config.maxCommits == value) {
+                    ConfigStore.update(this) { it.copy(maxCommits = value) }
+                    recreate()
+                },
+            )
+        }
+        return body
+    }
+
+    private fun segmentOptionRow(
+        label: String,
+        selected: Boolean,
+        onClick: () -> Unit,
+    ): View =
+        row().apply {
+            setPadding(dp(4), dp(12), dp(4), dp(12))
+            isClickable = true
+            setOnClickListener { onClick() }
+            addView(
+                text(if (selected) "✓" else "", 15f, COLOR_TEXT, bold = true).apply {
+                    width = dp(26)
+                },
+            )
+            addView(text(label, 14f, COLOR_TEXT), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
     private fun buildSettingsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
@@ -3824,26 +3874,6 @@ class SparkSettingsActivity : Activity() {
                     switchRow("自动续火花", "打开后才会自动发送；默认关闭", config.enabled) { checked ->
                         ConfigStore.update(this@SparkSettingsActivity) { it.copy(enabled = checked) }
                     },
-                )
-            },
-        )
-
-        body.addView(sectionTitle("发送分段"))
-        body.addView(
-            card().apply {
-                addView(
-                    menuRow(
-                        UiKit.Icons.EDIT,
-                        "贴纸 push 行为",
-                        stickerModeLabel(config.stickerPushMode),
-                    ) { showStickerModeDialog(config.stickerPushMode) },
-                )
-                addView(
-                    menuRow(
-                        UiKit.Icons.SERVER,
-                        "每会话最多 commit 次数",
-                        "${config.maxCommits} 次（超出的内容合并到最后一段）",
-                    ) { showMaxCommitsDialog(config.maxCommits) },
                 )
             },
         )
@@ -3864,6 +3894,11 @@ class SparkSettingsActivity : Activity() {
         )
 
         body.addView(sectionTitle("更多"))
+        body.addView(
+            menuRow(UiKit.Icons.EDIT, "分段设置", "贴纸入队方式与每会话 commit 上限") {
+                openSubPage(SUB_SEGMENTS)
+            },
+        )
         body.addView(
             menuRow(UiKit.Icons.GRAPH, "概览", "会话数、今日已续 / 待续 / 待重燃、今日已发") {
                 openSubPage(SUB_OVERVIEW)
@@ -3970,7 +4005,8 @@ class SparkSettingsActivity : Activity() {
         /** 设置页的二级页面：键 → 标题。 */
         val SUB_PAGES =
             linkedMapOf(
-                SUB_OVERVIEW to "概览",
+                SUB_SEGMENTS to "分段设置",
+            SUB_OVERVIEW to "概览",
                 SUB_ASSIGN to "手动归属",
                 SUB_EDITOR to "编辑器",
                 SUB_CONFIG to "配置",
@@ -3994,6 +4030,7 @@ class SparkSettingsActivity : Activity() {
         const val PAGE_MACROS = 0
         const val PAGE_FUNCTIONS = 1
 
+        const val SUB_SEGMENTS = "segments"
         const val SUB_OVERVIEW = "overview"
         const val SUB_ASSIGN = "assign"
         const val SUB_EDITOR = "editor"

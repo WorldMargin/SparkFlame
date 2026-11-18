@@ -562,6 +562,25 @@ object AutoSparkBridge {
                             Thread({ sendNowAndNotify(context, targets) }, "spark-send").apply { isDaemon = true }.start()
                         }
 
+                        "com.worldmargin.autospark.action.DUMP_MEM" -> {
+                            Thread({ com.worldmargin.autospark.host.MemScan.dump() }, "spark-mem").start()
+                        }
+
+                        "com.worldmargin.autospark.action.DUMP_UTILS_CLASS" -> {
+                            val name = com.worldmargin.autospark.host.im.ImMsgBridge.utilsClassName()
+                            runCatching {
+                                java.io.File(context.filesDir, "spark_utils_class.txt").writeText(name)
+                            }
+                        }
+
+                        "com.worldmargin.autospark.action.DUMP_LITE_MEMBERS" -> {
+                            Thread({ com.worldmargin.autospark.host.LiteReflect.dump(context) }, "spark-reflect").start()
+                        }
+
+                        "com.worldmargin.autospark.action.DUMP_LITE_CLASSES" -> {
+                            Thread({ com.worldmargin.autospark.host.DexScan.dump(context) }, "spark-dexscan").start()
+                        }
+
                         "com.worldmargin.autospark.action.TEST_STICKER" -> {
                             val cid = intent.getStringExtra("conversation_id").orEmpty()
                             Thread(
@@ -598,6 +617,10 @@ object AutoSparkBridge {
                 addAction(ConfigContract.ACTION_PING_HOST)
                 addAction("com.worldmargin.autospark.action.DUMP_STICKER")
                 addAction("com.worldmargin.autospark.action.TEST_STICKER")
+                addAction("com.worldmargin.autospark.action.DUMP_LITE_CLASSES")
+                addAction("com.worldmargin.autospark.action.DUMP_LITE_MEMBERS")
+                addAction("com.worldmargin.autospark.action.DUMP_UTILS_CLASS")
+                addAction("com.worldmargin.autospark.action.DUMP_MEM")
             }
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

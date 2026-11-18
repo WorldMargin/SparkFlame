@@ -148,6 +148,9 @@ object ImMsgBridge {
      * @param messageId 消息的服务端 ID（getMessages 结果的 msgId）
      */
     /** 发送互动贴纸（msgType=5）：贴纸只靠 content JSON，不回填 contentObj。 */
+    /** 临时：取发送工具的具体实现类名（IMessageUtils 是接口，hook 需要实现类）。 */
+    fun utilsClassName(): String = runCatching { messageUtils()?.javaClass?.name ?: "" }.getOrDefault("")
+
     fun sendStickerJson(
         conversationId: String,
         contentJson: String,

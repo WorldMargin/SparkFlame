@@ -82,6 +82,7 @@ android {
 }
 
 dependencies {
+    implementation("org.luckypray:dexkit:2.0.6")
     compileOnly(libs.libxposed.api)
     implementation(libs.rhino)
     implementation(libs.webkit)

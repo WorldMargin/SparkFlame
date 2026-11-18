@@ -3826,43 +3826,73 @@ class SparkSettingsActivity : Activity() {
                 "appendLast" to "贴纸放到最后",
                 "prependFirst" to "贴纸放到最前",
             )
-        modes.forEach { (value, label) ->
-            body.addView(
-                segmentOptionRow(label, config.stickerPushMode == value) {
-                    ConfigStore.update(this) { it.copy(stickerPushMode = value) }
-                    recreate()
-                },
-            )
-        }
-
-        body.addView(sectionTitle("每会话最多 commit 次数"))
-        listOf(1, 2, 3, 5, 10).forEach { value ->
-            body.addView(
-                segmentOptionRow("$value 次（超出的内容合并到最后一段）", config.maxCommits == value) {
-                    ConfigStore.update(this) { it.copy(maxCommits = value) }
-                    recreate()
-                },
-            )
-        }
+        body.addView(
+            card().apply {
+                addView(
+                    segmentSpinnerRow(
+                        "贴纸 push",
+                        modes.map { it.second },
+                        modes.indexOfFirst { it.first == config.stickerPushMode }.coerceAtLeast(0),
+                    ) { index ->
+                        ConfigStore.update(this@SparkSettingsActivity) {
+                            it.copy(stickerPushMode = modes[index].first)
+                        }
+                        recreate()
+                    },
+                )
+                addView(
+                    segmentSpinnerRow(
+                        "commit 上限",
+                        listOf("1 次", "2 次", "3 次", "5 次", "10 次"),
+                        listOf(1, 2, 3, 5, 10).indexOf(config.maxCommits).coerceAtLeast(0),
+                    ) { index ->
+                        ConfigStore.update(this@SparkSettingsActivity) {
+                            it.copy(maxCommits = listOf(1, 2, 3, 5, 10)[index])
+                        }
+                        recreate()
+                    },
+                )
+            },
+        )
         return body
     }
 
-    private fun segmentOptionRow(
+    /** 一行「标题 + 原生 Spinner」；选择变化回调下标。 */
+    private fun segmentSpinnerRow(
         label: String,
-        selected: Boolean,
-        onClick: () -> Unit,
-    ): View =
-        row().apply {
-            setPadding(dp(4), dp(12), dp(4), dp(12))
-            isClickable = true
-            setOnClickListener { onClick() }
-            addView(
-                text(if (selected) "✓" else "", 15f, COLOR_TEXT, bold = true).apply {
-                    width = dp(26)
-                },
-            )
+        options: List<String>,
+        selected: Int,
+        onPick: (Int) -> Unit,
+    ): View {
+        val spinner =
+            android.widget.Spinner(this).apply {
+                adapter =
+                    android.widget.ArrayAdapter(
+                        this@SparkSettingsActivity,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        options,
+                    )
+                setSelection(selected, false)
+                onItemSelectedListener =
+                    object : android.widget.AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(
+                            parent: android.widget.AdapterView<*>?,
+                            view: View?,
+                            position: Int,
+                            id: Long,
+                        ) {
+                            if (position != selected) onPick(position)
+                        }
+
+                        override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+                    }
+            }
+        return row().apply {
+            setPadding(dp(14), dp(8), dp(10), dp(8))
             addView(text(label, 14f, COLOR_TEXT), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(spinner, LinearLayout.LayoutParams(dp(210), LinearLayout.LayoutParams.WRAP_CONTENT))
         }
+    }
 
     private fun buildSettingsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
@@ -3895,7 +3925,7 @@ class SparkSettingsActivity : Activity() {
 
         body.addView(sectionTitle("更多"))
         body.addView(
-            menuRow(UiKit.Icons.EDIT, "分段设置", "贴纸入队方式与每会话 commit 上限") {
+            menuRow(UiKit.Icons.DEBUG_ALT, "运行设置", "") {
                 openSubPage(SUB_SEGMENTS)
             },
         )
@@ -4005,7 +4035,7 @@ class SparkSettingsActivity : Activity() {
         /** 设置页的二级页面：键 → 标题。 */
         val SUB_PAGES =
             linkedMapOf(
-                SUB_SEGMENTS to "分段设置",
+                SUB_SEGMENTS to "运行设置",
             SUB_OVERVIEW to "概览",
                 SUB_ASSIGN to "手动归属",
                 SUB_EDITOR to "编辑器",

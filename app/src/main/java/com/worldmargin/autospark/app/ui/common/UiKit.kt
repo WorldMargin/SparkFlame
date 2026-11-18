@@ -36,6 +36,7 @@ object UiKit {
     object Icons {
         const val FIRE = "\ueaf2"
         const val REACTIONS = "\ueb35"
+        const val DEBUG_ALT = "\ueb91"
         const val TEMPLATE = "\ueaf0"
         const val CODE = "\ueac4"
         const val GEAR = "\ueb51"

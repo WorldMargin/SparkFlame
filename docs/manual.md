@@ -286,6 +286,10 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 | `ctx.emoji.list()` | 全部抖音表情：`[{ code, name, pinyin }]` |
 | `ctx.emoji.find(keyword?)` | 模糊查找：名字 / 表情码 / 拼音（`xiao` 能匹配「微笑 weixiao」） |
 | `ctx.emoji.random(keyword?)` | 从查找结果里随机取一个表情对象，没有返回 `null` |
+| `ctx.commit()` | 把当前 `ctx.result` 缓冲提交为一段，返回 `{ handle, index }`；可多次调用实现多段发送 |
+| `ctx.submit()` | 提交当前缓冲为最后一段并结束脚本，队列继续发送 |
+| `ctx.exit()` | 结束脚本并**放弃本轮全部发送**（已 commit 的段也不发） |
+| `ctx.segment(handle)` | 在结果回调里查询某段的发送状态，返回 `{ handle, status, ok?, reason? }` |
 | `ctx.system.mountMacro(id, target?)` | 按宏 **id** 挂到指定目标（不传 = 当前会话） |
 | `ctx.system.unmountMacro(id, target?)` | 按宏 **id** 从指定目标摘掉 |
 | `ctx.system.unmountAll(target?)` | 把指定目标上的所有宏都摘掉 |
@@ -379,6 +383,41 @@ var filtered = ctx.system.getAllConversation({ tags: { except: [["同事"], ["�
 // 函数：逐项判断
 var need = ctx.system.getAllConversation(function (c) { return c.autoSend && c.days > 30; });
 ```
+
+
+### 多段发送与贴纸
+
+`ctx.result` 默认作为**一段**文本发送；调用 `ctx.commit()` 可以切段，一个会话最多发送「设置 → 发送分段 → 每会话最多 commit 次数」段，超出的内容由引擎合并到最后一段。
+
+```js
+ctx.result.push("第一段");
+var h1 = ctx.commit();          // { handle: "seg-1", index: 1 }
+
+ctx.result.push("第二段");
+var h2 = ctx.commit();
+
+ctx.registerCallback(function (res) {
+  // res.segments = [{ handle: "seg-1", ok: true }, ...]
+  // ctx.segment(h1) 同义
+});
+```
+
+贴纸用对象 push，必须显式带 `type: "sticker"`：
+
+```js
+ctx.result.push({ type: "sticker", name: "续火花" });
+```
+
+贴纸入队位置由「设置 → 发送分段 → 贴纸 push 行为」决定：
+
+| 模式 | 行为 |
+| --- | --- |
+| 贴纸前先 commit 前面的文本 | 先把缓冲文本提交成段，再让贴纸单独入队（默认） |
+| 仅贴纸入队，文本继续累积 | 贴纸立即入队，前面的文本留在缓冲里继续拼 |
+| 贴纸放到最后 | 脚本结束时贴纸排在所有段之后 |
+| 贴纸放到最前 | 脚本结束时贴纸排在所有段之前 |
+
+注意：贴纸的**网络发送尚未实现**，当前版本里贴纸段会以「贴纸发送尚未实现」失败，不会影响同轮的文本段；分段框架、设置项和回执已经就位。
 
 **`getConversation(id)` 的完整用法**
 

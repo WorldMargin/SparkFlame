@@ -3769,6 +3769,51 @@ class SparkSettingsActivity : Activity() {
      * 设置页只留最常用的开关与入口：概览 / 手动归属 / 编辑器 / 宿主状态 / 关于都进二级页面
      * （见 [buildSubPage]），避免一屏塞满。
      */
+    private fun stickerModeLabel(mode: String): String =
+        when (mode) {
+            "stickerOnly" -> "仅贴纸入队，前面的文本继续累积"
+            "appendLast" -> "贴纸放到最后发送"
+            "prependFirst" -> "贴纸放到最前发送"
+            else -> "贴纸前先 commit 前面的文本（推荐）"
+        }
+
+    private fun showStickerModeDialog(current: String) {
+        val modes =
+            listOf(
+                "split" to "贴纸前先 commit 前面的文本",
+                "stickerOnly" to "仅贴纸入队，文本继续累积",
+                "appendLast" to "贴纸放到最后",
+                "prependFirst" to "贴纸放到最前",
+            )
+        var checked = modes.indexOfFirst { it.first == current }.coerceAtLeast(0)
+        AlertDialog
+            .Builder(this)
+            .setTitle("贴纸 push 行为")
+            .setSingleChoiceItems(modes.map { it.second }.toTypedArray(), checked) { dialog, which ->
+                checked = which
+                ConfigStore.update(this) { it.copy(stickerPushMode = modes[which].first) }
+                dialog.dismiss()
+                recreate()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showMaxCommitsDialog(current: Int) {
+        val values = listOf(1, 2, 3, 5, 10)
+        val checked = values.indexOf(current).coerceAtLeast(0)
+        AlertDialog
+            .Builder(this)
+            .setTitle("每会话最多 commit 次数")
+            .setSingleChoiceItems(values.map { "$it 次" }.toTypedArray(), checked) { dialog, which ->
+                ConfigStore.update(this) { it.copy(maxCommits = values[which]) }
+                dialog.dismiss()
+                recreate()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun buildSettingsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
@@ -3779,6 +3824,26 @@ class SparkSettingsActivity : Activity() {
                     switchRow("自动续火花", "打开后才会自动发送；默认关闭", config.enabled) { checked ->
                         ConfigStore.update(this@SparkSettingsActivity) { it.copy(enabled = checked) }
                     },
+                )
+            },
+        )
+
+        body.addView(sectionTitle("发送分段"))
+        body.addView(
+            card().apply {
+                addView(
+                    menuRow(
+                        UiKit.Icons.EDIT,
+                        "贴纸 push 行为",
+                        stickerModeLabel(config.stickerPushMode),
+                    ) { showStickerModeDialog(config.stickerPushMode) },
+                )
+                addView(
+                    menuRow(
+                        UiKit.Icons.SERVER,
+                        "每会话最多 commit 次数",
+                        "${config.maxCommits} 次（超出的内容合并到最后一段）",
+                    ) { showMaxCommitsDialog(config.maxCommits) },
                 )
             },
         )

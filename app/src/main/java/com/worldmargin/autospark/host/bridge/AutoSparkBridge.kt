@@ -102,6 +102,8 @@ object AutoSparkBridge {
             macroNames = macroNamesJson(config),
             info = infoJson(config, conversations, only, ignoreSentToday),
             emojis = emojiCatalogJson(),
+            maxCommits = config.maxCommits,
+            stickerPushMode = config.stickerPushMode,
             preview = false,
         )
 
@@ -461,10 +463,11 @@ object AutoSparkBridge {
         pendingSandbox: MutableList<SandboxVar>,
         pendingSandboxDeletes: MutableList<Pair<String, String>>,
         macroOps: MutableList<SparkScriptEngine.MacroOp>,
+        segmentsJson: String = "",
     ) {
         if (callbacks.isEmpty()) return
         val extra =
-            runCatching { SparkScriptEngine.notifySendResult(callbacks, conversationId, result, reason) }
+            runCatching { SparkScriptEngine.notifySendResult(callbacks, conversationId, result, reason, segmentsJson) }
                 .getOrNull() ?: return
         pendingSandbox.addAll(extra.sandboxWrites)
         pendingSandboxDeletes.addAll(extra.sandboxDeletes.map { it.owner to it.key })
@@ -1087,10 +1090,43 @@ object AutoSparkBridge {
             macroOps +=
                 rendered.macroOps.map { op -> if (op.targetId.isBlank()) op.copy(targetId = conversationId) else op }
             val text = rendered.text
-
-            val outcome = runCatching { JSONObject(ImMsgBridge.sendTextJson(conversationId, text, 0L, "")) }.getOrNull()
-            val success = outcome != null && outcome.optBoolean("ok")
-            val reason = if (success) "" else (outcome?.optString("error")?.takeIf { it.isNotBlank() } ?: "发送失败")
+            val segments =
+                rendered.segments.ifEmpty {
+                    listOf(SparkScriptEngine.SendSegment("text", text = text))
+                }
+            val segResults = org.json.JSONArray()
+            var sentText = false
+            var textOk = true
+            var firstReason = ""
+            var lastMsgId = 0L
+            segments.forEach { seg ->
+                if (seg.kind == "text") {
+                    val outcome =
+                        runCatching { JSONObject(ImMsgBridge.sendTextJson(conversationId, seg.text, 0L, "")) }.getOrNull()
+                    val ok = outcome != null && outcome.optBoolean("ok")
+                    if (ok) {
+                        sentText = true
+                        lastMsgId = outcome?.optLong("msgId") ?: 0L
+                    } else {
+                        textOk = false
+                        if (firstReason.isEmpty()) {
+                            firstReason = outcome?.optString("error")?.takeIf { it.isNotBlank() } ?: "发送失败"
+                        }
+                    }
+                    segResults.put(
+                        JSONObject().put("handle", seg.handle).put("kind", "text").put("ok", ok)
+                            .put("reason", if (ok) "" else firstReason),
+                    )
+                } else {
+                    if (firstReason.isEmpty()) firstReason = "贴纸发送尚未实现"
+                    segResults.put(
+                        JSONObject().put("handle", seg.handle).put("kind", "sticker").put("ok", false)
+                            .put("name", seg.name).put("reason", "贴纸发送尚未实现"),
+                    )
+                }
+            }
+            val success = textOk && sentText
+            val reason = if (success) "" else firstReason.ifBlank { "发送失败" }
             fireResultCallbacks(
                 rendered.callbacks,
                 conversationId,
@@ -1099,17 +1135,18 @@ object AutoSparkBridge {
                 pendingSandbox,
                 pendingSandboxDeletes,
                 macroOps,
+                segmentsJson = segResults.toString(),
             )
             if (success) {
                 ConfigClient.markSent(context, conversationId, today)
                 sent.put(
                     JSONObject().put("conversationId", conversationId).put("name", name)
-                        .put("text", text).put("msgId", outcome.optLong("msgId")),
+                        .put("text", text).put("msgId", lastMsgId),
                 )
             } else {
                 failed.put(
                     JSONObject().put("conversationId", conversationId).put("name", name)
-                        .put("error", outcome?.optString("error") ?: "发送失败"),
+                        .put("error", firstReason.ifBlank { "发送失败" }),
                 )
             }
         }
@@ -1150,6 +1187,19 @@ object AutoSparkBridge {
             val version = json.optString("id")
             if (version.isBlank()) return
             if (ConfigClient.emojiVersion(context) == version) return
+            // 失败节流：同一版本 6 小时内只尝试一次，避免每次打开抖音都弹更新提示
+            val tryFile = java.io.File(context.filesDir, "spark_emoji_try.json")
+            val now = System.currentTimeMillis()
+            val last =
+                runCatching {
+                    org.json.JSONObject(tryFile.readText())
+                }.getOrNull()
+            if (last != null && last.optString("version") == version && now - last.optLong("at") < 6 * 60 * 60 * 1000L) {
+                return
+            }
+            runCatching {
+                tryFile.writeText(org.json.JSONObject().put("version", version).put("at", now).toString())
+            }
             val stickers = json.optJSONArray("stickers") ?: return
             val staticDir = java.io.File(emojiDir, "static")
             val catalog = org.json.JSONArray()
@@ -1187,7 +1237,6 @@ object AutoSparkBridge {
             val bytes = buffer.toByteArray()
             val chunkSize = 400 * 1024
             val total = (bytes.size + chunkSize - 1) / chunkSize
-            com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在更新表情 0%）")
             var lastShown = 0
             var sentChunks = 0
             for (index in 0 until total) {
@@ -1213,7 +1262,7 @@ object AutoSparkBridge {
                 }
                 sentChunks++
                 val percent = ((index + 1) * 100) / total
-                if (percent - lastShown >= 10 || index == total - 1) {
+                if (sentChunks >= 1 && (percent - lastShown >= 10 || index == total - 1)) {
                     lastShown = percent
                     com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在更新表情 $percent%）")
                 }

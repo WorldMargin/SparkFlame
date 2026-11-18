@@ -3818,6 +3818,33 @@ class SparkSettingsActivity : Activity() {
     private fun buildSegmentsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
+        body.addView(sectionTitle("资源刷新时机"))
+        body.addView(
+            card().apply {
+                addView(
+                    switchRow("模块更新时刷新", "表情与贴纸目录随模块版本更新", config.resRefreshOnModule) { checked ->
+                        ConfigStore.update(this@SparkSettingsActivity) { it.copy(resRefreshOnModule = checked) }
+                    },
+                )
+                addView(
+                    switchRow("抖音更新时刷新", "抖音版本变化后重新同步", config.resRefreshOnDouyin) { checked ->
+                        ConfigStore.update(this@SparkSettingsActivity) { it.copy(resRefreshOnDouyin = checked) }
+                    },
+                )
+                addView(
+                    segmentSpinnerRow(
+                        "过期天数",
+                        listOf("关闭", "1 天", "3 天", "7 天", "15 天", "30 天"),
+                        listOf(0, 1, 3, 7, 15, 30).indexOf(config.resRefreshDays).coerceAtLeast(0),
+                    ) { index ->
+                        ConfigStore.update(this@SparkSettingsActivity) {
+                            it.copy(resRefreshDays = listOf(0, 1, 3, 7, 15, 30)[index])
+                        }
+                    },
+                )
+            },
+        )
+
         val modes =
             listOf(
                 "split" to "贴纸前先 commit 前面的文本",

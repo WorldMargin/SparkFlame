@@ -118,4 +118,30 @@ object ConfigClient {
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
 
+    /** 保存互动贴纸目录到模块缓存。 */
+    fun putStickers(
+        context: Context,
+        json: String,
+        moduleVersion: String,
+        douyinVersion: String,
+    ): Boolean =
+        runCatching {
+            val extras =
+                Bundle().apply {
+                    putString(ConfigContract.KEY_JSON, json)
+                    putString("moduleVersion", moduleVersion)
+                    putString("douyinVersion", douyinVersion)
+                    putLong("at", System.currentTimeMillis())
+                }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_STICKERS, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
+    /** 贴纸目录同步元信息：moduleVersion / douyinVersion / at。 */
+    fun stickerMeta(context: Context): org.json.JSONObject? =
+        runCatching {
+            val file = java.io.File(context.filesDir, "sticker_meta.json")
+            if (file.isFile) org.json.JSONObject(file.readText()) else null
+        }.getOrNull()
+
 }

@@ -83,6 +83,9 @@ object ConfigContract {
     /** 查询已同步的抖音表情资源版本。 */
     const val METHOD_EMOJI_VERSION = "emojiVersion"
 
+    /** 写入互动贴纸目录 + 同步元信息。 */
+    const val METHOD_PUT_STICKERS = "putStickers"
+
     /** 写入一批表情资源（version / index / total / payload）。 */
     const val METHOD_PUT_EMOJI_CHUNK = "putEmojiChunk"
 
@@ -167,6 +170,23 @@ class ConfigProvider : ContentProvider() {
                 val now = extras?.getLong(ConfigContract.KEY_TIME) ?: System.currentTimeMillis()
                 ConfigStore.update(context) { config -> config.pruneTemplates(now) }
                 Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
+            }
+
+            ConfigContract.METHOD_PUT_STICKERS -> {
+                val json = extras?.getString(ConfigContract.KEY_JSON)
+                if (json == null) {
+                    Bundle().apply { putBoolean(ConfigContract.KEY_OK, false) }
+                } else {
+                    runCatching {
+                        java.io.File(context.filesDir, "sticker_catalog.json").writeText(json)
+                        val meta = org.json.JSONObject()
+                        meta.put("moduleVersion", extras.getString("moduleVersion") ?: "")
+                        meta.put("douyinVersion", extras.getString("douyinVersion") ?: "")
+                        meta.put("at", extras.getLong("at", System.currentTimeMillis()))
+                        java.io.File(context.filesDir, "sticker_meta.json").writeText(meta.toString())
+                    }
+                    Bundle().apply { putBoolean(ConfigContract.KEY_OK, true) }
+                }
             }
 
             ConfigContract.METHOD_EMOJI_VERSION -> {

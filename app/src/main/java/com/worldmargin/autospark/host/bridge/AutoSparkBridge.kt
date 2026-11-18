@@ -18,6 +18,7 @@ import com.worldmargin.autospark.app.script.EmptyResultException
 import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.host.im.ImBridge
 import com.worldmargin.autospark.host.im.ImMsgBridge
+import com.worldmargin.autospark.host.im.StickerCatalog
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.javascript.Function
@@ -106,6 +107,40 @@ object AutoSparkBridge {
             stickerPushMode = config.stickerPushMode,
             preview = false,
         )
+
+    /** 按设置的刷新时机，把互动贴纸目录同步到模块缓存。 */
+    private fun syncStickers(context: Context) {
+        runCatching {
+            val config = ConfigClient.read(context) ?: return
+            val meta = ConfigClient.stickerMeta(context)
+            val moduleVersion = com.worldmargin.autospark.BuildConfig.VERSION_NAME
+            val douyinVersion =
+                runCatching {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+                }.getOrDefault("")
+            val at = meta?.optLong("at", 0L) ?: 0L
+            val expired =
+                config.resRefreshDays > 0 && System.currentTimeMillis() - at > config.resRefreshDays * 86_400_000L
+            val need =
+                meta == null ||
+                    (config.resRefreshOnModule && meta.optString("moduleVersion") != moduleVersion) ||
+                    (config.resRefreshOnDouyin && meta.optString("douyinVersion") != douyinVersion) ||
+                    expired
+            if (!need) return
+            val items = StickerCatalog.items(context)
+            if (items.isEmpty()) return
+            val arr = org.json.JSONArray()
+            items.forEach { item ->
+                arr.put(
+                    org.json.JSONObject()
+                        .put("name", item.name)
+                        .put("static", item.staticUrl)
+                        .put("animate", item.animateUrl),
+                )
+            }
+            ConfigClient.putStickers(context, arr.toString(), moduleVersion, douyinVersion)
+        }.onFailure { ModLog.w("贴纸目录同步失败：$it") }
+    }
 
     /** 按名字生成互动表情 content（目录来自 keva 的 interactive_resource_config）。 */
     private fun stickerContentFor(
@@ -1384,6 +1419,7 @@ object AutoSparkBridge {
             {
                 wakeModule(context)
                 runCatching { syncEmojiAssets(context) }
+                runCatching { syncStickers(context) }
                 runCatching { syncEmojiAssets(context) }
                 HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
                 com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")

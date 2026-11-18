@@ -19,9 +19,7 @@ The current default is 'false'.
 > Task :app:processReleaseNavigationResources UP-TO-DATE
 > Task :app:parseReleaseLocalResources UP-TO-DATE
 > Task :app:generateReleaseRFile UP-TO-DATE
-> Task :app:compileReleaseKotlin UP-TO-DATE
 > Task :app:javaPreCompileRelease UP-TO-DATE
-> Task :app:compileReleaseJavaWithJavac UP-TO-DATE
 > Task :app:mergeReleaseArtProfile UP-TO-DATE
 > Task :app:checkReleaseAarMetadata UP-TO-DATE
 > Task :app:mapReleaseSourceSetPaths UP-TO-DATE
@@ -33,29 +31,35 @@ The current default is 'false'.
 > Task :app:processReleaseManifest UP-TO-DATE
 > Task :app:processReleaseManifestForPackage UP-TO-DATE
 > Task :app:processReleaseResources UP-TO-DATE
-> Task :app:expandReleaseArtProfileWildcards UP-TO-DATE
 > Task :app:extractProguardFiles UP-TO-DATE
-> Task :app:mergeReleaseGeneratedProguardFiles UP-TO-DATE
-> Task :app:processReleaseJavaRes UP-TO-DATE
-> Task :app:mergeReleaseJavaResource UP-TO-DATE
 > Task :app:mergeReleaseStartupProfile UP-TO-DATE
-> Task :app:minifyReleaseWithR8 UP-TO-DATE
-> Task :app:compileReleaseArtProfile UP-TO-DATE
 > Task :app:generateReleaseAssets UP-TO-DATE
-> Task :app:mergeReleaseAssets
+> Task :app:mergeReleaseAssets UP-TO-DATE
+> Task :app:compressReleaseAssets UP-TO-DATE
 > Task :app:extractReleaseVersionControlInfo UP-TO-DATE
-> Task :app:convertShrunkResourcesToBinaryRelease UP-TO-DATE
-> Task :app:optimizeReleaseResources UP-TO-DATE
 > Task :app:collectReleaseDependencies UP-TO-DATE
 > Task :app:sdkReleaseDependencyData UP-TO-DATE
 > Task :app:validateSigningRelease UP-TO-DATE
 > Task :app:writeReleaseAppMetadata UP-TO-DATE
 > Task :app:writeReleaseSigningConfigVersions UP-TO-DATE
-> Task :app:compressReleaseAssets
+
+> Task :app:compileReleaseKotlin
+w: file:///D:/desktop/Android%20Project/Root/抖音自动续火花/doumcp_src/app/src/main/java/com/worldmargin/autospark/app/editor/SparkEditor.kt:196:59 'static field SHOW_IMPLICIT: Int' is deprecated. Deprecated in Java.
+w: file:///D:/desktop/Android%20Project/Root/抖音自动续火花/doumcp_src/app/src/main/java/com/worldmargin/autospark/app/ui/variable/VariableListActivity.kt:323:62 'static field SHOW_IMPLICIT: Int' is deprecated. Deprecated in Java.
+
+> Task :app:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :app:expandReleaseArtProfileWildcards
+> Task :app:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :app:processReleaseJavaRes UP-TO-DATE
+> Task :app:mergeReleaseJavaResource UP-TO-DATE
+> Task :app:minifyReleaseWithR8
+> Task :app:compileReleaseArtProfile
+> Task :app:convertShrunkResourcesToBinaryRelease UP-TO-DATE
+> Task :app:optimizeReleaseResources UP-TO-DATE
 > Task :app:packageRelease
 > Task :app:createReleaseApkListingFileRedirect UP-TO-DATE
 > Task :app:assembleRelease
 
-BUILD SUCCESSFUL in 2s
-44 actionable tasks: 3 executed, 41 up-to-date
+BUILD SUCCESSFUL in 46s
+44 actionable tasks: 5 executed, 39 up-to-date
 Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.1/userguide/configuration_cache_enabling.html

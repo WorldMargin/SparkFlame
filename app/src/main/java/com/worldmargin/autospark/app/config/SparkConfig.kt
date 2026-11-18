@@ -211,6 +211,12 @@ data class SparkConfig(
     val stickerPushMode: String = "split",
     /** 每个会话最多 commit 多少次（含贴纸段）。 */
     val maxCommits: Int = 3,
+    /** 模块更新后刷新表情/贴纸目录。 */
+    val resRefreshOnModule: Boolean = true,
+    /** 抖音版本变化后刷新表情/贴纸目录。 */
+    val resRefreshOnDouyin: Boolean = true,
+    /** 超过多少天未刷新则打开时刷新（0 = 不按时间刷新）。 */
+    val resRefreshDays: Int = 7,
     /**
      * 宿主（抖音进程）最近一次运行的简报：快照刷新是否成功、失败原因、续火花结果。
      * 本机 LSPosed 日志不可用，这是唯一能让管理界面看到宿主侧状态的通道。
@@ -802,6 +808,9 @@ object ConfigCodec {
     private const val KEY_FORCED_RENEW = "forcedRenew"
     private const val KEY_FORCED_SKIP = "forcedSkip"
     private const val KEY_STICKER_PUSH_MODE = "stickerPushMode"
+    private const val KEY_RES_MODULE = "resRefreshOnModule"
+    private const val KEY_RES_DOUYIN = "resRefreshOnDouyin"
+    private const val KEY_RES_DAYS = "resRefreshDays"
     private const val KEY_MAX_COMMITS = "maxCommits"
     private const val KEY_HOST_NOTE = "hostNote"
     private const val KEY_HOST_NOTE_AT = "hostNoteAt"
@@ -975,6 +984,9 @@ object ConfigCodec {
             .put(KEY_TAGS, tags)
             .put(KEY_CONVERSATION_TAGS, conversationTags)
             .put(KEY_STICKER_PUSH_MODE, config.stickerPushMode)
+            .put(KEY_RES_MODULE, config.resRefreshOnModule)
+            .put(KEY_RES_DOUYIN, config.resRefreshOnDouyin)
+            .put(KEY_RES_DAYS, config.resRefreshDays)
             .put(KEY_MAX_COMMITS, config.maxCommits)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
@@ -1141,6 +1153,9 @@ object ConfigCodec {
             tags = tags,
             conversationTags = conversationTags,
             stickerPushMode = root.optString(KEY_STICKER_PUSH_MODE, "split").ifBlank { "split" },
+            resRefreshOnModule = root.optBoolean(KEY_RES_MODULE, true),
+            resRefreshOnDouyin = root.optBoolean(KEY_RES_DOUYIN, true),
+            resRefreshDays = root.optInt(KEY_RES_DAYS, 7).coerceIn(0, 90),
             maxCommits = root.optInt(KEY_MAX_COMMITS, 3).coerceIn(1, 20),
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),

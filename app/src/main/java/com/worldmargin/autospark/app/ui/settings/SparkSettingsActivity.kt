@@ -50,6 +50,8 @@ import com.worldmargin.autospark.app.provider.ConfigContract
 import com.worldmargin.autospark.app.script.PreviewData
 import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.app.config.ConfigStore
+import com.worldmargin.autospark.app.config.SigStore
+import com.worldmargin.autospark.core.AuthGate
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_ACCENT
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_BG
 import com.worldmargin.autospark.app.ui.common.UiKit.COLOR_CARD
@@ -73,6 +75,7 @@ import com.worldmargin.autospark.app.ui.common.UiKit.iconButton
 import com.worldmargin.autospark.app.ui.common.UiKit.linkRow
 import com.worldmargin.autospark.app.ui.common.UiKit.menuRow
 import com.worldmargin.autospark.app.ui.common.UiKit.navBar
+import com.worldmargin.autospark.app.ui.common.UiKit.openUrl
 import com.worldmargin.autospark.app.ui.common.UiKit.padSystemBars
 import com.worldmargin.autospark.app.ui.common.UiKit.rounded
 import com.worldmargin.autospark.app.ui.common.UiKit.row
@@ -283,7 +286,27 @@ class SparkSettingsActivity : Activity() {
     override fun onResume() {
         super.onResume()
         registerSnapshotReceiver()
+        requestResourceSync()
+        ensureSignatureNotice()
         render()
+    }
+
+    /** 上次向宿主请求资源同步的时间（避免每次回前台都敲一遍）。 */
+    private var lastResSyncAt = 0L
+
+    /**
+     * 资源（表情 / 贴纸图）由宿主代拉：App 一起来就提示宿主补一轮。
+     *
+     * 正常路径不靠这条：宿主启动时自己会同步。它只是兜底——重装 / 清数据后模块侧一版都没有，
+     * 而宿主那边的「已完成」状态还在，不敲一下就会一直跳过。
+     */
+    private fun requestResourceSync() {
+        val now = System.currentTimeMillis()
+        if (now - lastResSyncAt < 10_000L) return
+        lastResSyncAt = now
+        runCatching {
+            sendBroadcast(Intent(ConfigContract.ACTION_RES_SYNC).setPackage(DOUYIN_PACKAGE))
+        }
     }
 
     @Deprecated("系统返回键：二级页面优先回上一级")
@@ -391,6 +414,137 @@ class SparkSettingsActivity : Activity() {
             registerReceiver(snapshotReceiver, filter)
         }
     }
+
+    // -------------------------------------------------------------- 签名校验
+
+    /** 正在显示的签名提示（避免 onResume 反复弹）。 */
+    private var signatureDialog: android.app.Dialog? = null
+
+    /**
+     * 签名不符时弹一次「改包」提示。
+     *
+     * 用户点过「无视风险」后不再弹（授权位存 [SigStore]），设置页会留一条常驻警示；
+     * 点「去仓库下载」则离开当前版本 —— 这份 APK 不是我们签发的，不该继续用。
+     */
+    private fun ensureSignatureNotice() {
+        if (AuthGate.signatureOk(this)) return
+        if (AuthGate.isAccepted(this)) return
+        if (signatureDialog?.isShowing == true) return
+        showSignatureDialog()
+    }
+
+    private fun showSignatureDialog() {
+        val dialog = android.app.Dialog(this)
+        val body =
+            column().apply {
+                setPadding(dp(22), dp(20), dp(22), dp(8))
+                background = rounded(COLOR_BG, 18)
+                addView(
+                    row().apply {
+                        addView(icon(UiKit.Icons.WARNING, 17f, COLOR_WARN).apply { setPadding(0, 0, dp(8), 0) })
+                        addView(text(AuthGate.WARN_TITLE, 17f, COLOR_WARN, bold = true))
+                    },
+                )
+                AuthGate.WARN_BODY.forEachIndexed { index, line ->
+                    addView(
+                        text(line, 14f, if (index == 0) COLOR_TEXT else COLOR_DIM).apply {
+                            setPadding(0, dp(if (index == 0) 12 else 8), 0, 0)
+                        },
+                    )
+                }
+                addView(
+                    text("当前模块维护者：${AuthGate.MAINTAINER}", 13f, COLOR_DIM).apply {
+                        setPadding(0, dp(14), 0, 0)
+                    },
+                )
+                addView(
+                    text("仓库：${AuthGate.REPO_LABEL}", 13f, COLOR_ACCENT).apply {
+                        setPadding(0, dp(2), 0, 0)
+                        isClickable = true
+                        setOnClickListener { openUrl(AuthGate.REPO_URL) }
+                    },
+                )
+                addView(
+                    row().apply {
+                        setPadding(0, dp(16), 0, dp(2))
+                        addView(spacer())
+                        addView(
+                            text("无视风险", 14f, COLOR_DIM).apply {
+                                setPadding(dp(14), dp(10), dp(14), dp(10))
+                                isClickable = true
+                                setOnClickListener { acceptSignatureRisk(dialog) }
+                            },
+                        )
+                        addView(
+                            text("去仓库下载", 14f, COLOR_ACCENT, bold = true).apply {
+                                setPadding(dp(14), dp(10), dp(2), dp(10))
+                                isClickable = true
+                                setOnClickListener {
+                                    dialog.dismiss()
+                                    openUrl(AuthGate.REPO_URL)
+                                    finishAffinity()
+                                }
+                            },
+                        )
+                    },
+                )
+            }
+        dialog.setContentView(body)
+        dialog.setCancelable(false)
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            val width = (resources.displayMetrics.widthPixels * 0.88f).toInt()
+            setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        signatureDialog = dialog
+    }
+
+    /** 用户明确授权：记下这一次决定，并通知正在运行的抖音重新判定（不用重启）。 */
+    private fun acceptSignatureRisk(dialog: android.app.Dialog) {
+        SigStore.accept(this)
+        AuthGate.invalidate()
+        runCatching {
+            sendBroadcast(
+                Intent(ConfigContract.ACTION_SIG_CHANGED).setPackage(DOUYIN_PACKAGE),
+            )
+        }
+        dialog.dismiss()
+        Toast.makeText(this, "已授权继续使用（打开抖音即生效）", Toast.LENGTH_SHORT).show()
+        render()
+    }
+
+    /** 设置页顶部的常驻警示：签名不符时一直显示，避免用户忘了自己在用什么版本。 */
+    private fun signatureWarningCard(): View =
+        column().apply {
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(0x14E0523B, 14)
+            layoutParams =
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(10)
+                }
+            addView(
+                row().apply {
+                    addView(icon(UiKit.Icons.WARNING, 15f, COLOR_WARN).apply { setPadding(0, 0, dp(6), 0) })
+                    addView(text("签名校验未通过", 14f, COLOR_WARN, bold = true))
+                },
+            )
+            addView(
+                text(
+                    "当前安装的是第三方改包版本，你已授权它继续运行；如需长期使用，" +
+                        "建议到 ${AuthGate.REPO_LABEL} 下载官方构建或自行编译。",
+                    12f,
+                    COLOR_DIM,
+                ).apply { setPadding(0, dp(6), 0, 0) },
+            )
+            addView(
+                text("去仓库下载", 13f, COLOR_ACCENT, bold = true).apply {
+                    setPadding(0, dp(8), 0, 0)
+                    isClickable = true
+                    setOnClickListener { openUrl(AuthGate.REPO_URL) }
+                },
+            )
+        }
 
     /** 手动发送前确认一次（避免误点直接群发）。 */
     private fun confirmManualSend(targets: List<String>) {
@@ -753,10 +907,20 @@ class SparkSettingsActivity : Activity() {
                 body.addView(
                     card().apply {
                         addView(infoLine("版本", versionName()))
+                        addView(
+                            infoLine(
+                                "签名校验",
+                                if (AuthGate.signatureOk(this@SparkSettingsActivity)) {
+                                    "通过"
+                                } else {
+                                    "未通过（已授权继续使用）"
+                                },
+                            ),
+                        )
                         addView(text("配置与快照", 14f, COLOR_TEXT))
                         addView(
                             text(
-                                "/data/data/com.worldmargin.autospark/files/spark_config.json",
+                                java.io.File(filesDir, "spark_config.json").absolutePath,
                                 12f,
                                 COLOR_DIM,
                             ),
@@ -3926,6 +4090,8 @@ class SparkSettingsActivity : Activity() {
     private fun buildSettingsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
 
+        if (!AuthGate.signatureOk(this)) body.addView(signatureWarningCard())
+
         body.addView(sectionTitle("总开关"))
         body.addView(
             card().apply {
@@ -4112,7 +4278,8 @@ class SparkSettingsActivity : Activity() {
         /** 抖音冷启动后等它把模块装载好的时间。 */
         const val HOST_BOOT_WAIT_MS = 4_000L
 
-        const val DOUYIN_PACKAGE = "com.ss.android.ugc.aweme"
+        /** 宿主包名（构建期注入，见 gradle.properties 的 spark.hostPackage）。 */
+        val DOUYIN_PACKAGE: String get() = AuthGate.HOST_PACKAGE
 
         /** 配置导出 / 导入的文件选择请求码。 */
         const val REQUEST_EXPORT_CONFIG = 0x61

@@ -8,6 +8,7 @@ import android.os.Build
 import android.widget.Toast
 import com.worldmargin.autospark.core.HostRuntime
 import com.worldmargin.autospark.core.ModLog
+import com.worldmargin.autospark.core.AuthGate
 import com.worldmargin.autospark.host.account.AccountBridge
 import com.worldmargin.autospark.app.config.BuiltinTemplates
 import com.worldmargin.autospark.app.config.ConversationSnapshot
@@ -19,6 +20,7 @@ import com.worldmargin.autospark.app.script.SparkScriptEngine
 import com.worldmargin.autospark.host.im.ImBridge
 import com.worldmargin.autospark.host.im.ImMsgBridge
 import com.worldmargin.autospark.host.im.StickerCatalog
+import com.worldmargin.autospark.host.im.StickerCache
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.javascript.Function
@@ -52,8 +54,11 @@ object AutoSparkBridge {
     /** 唤醒模块进程后等它就绪的时间。 */
     private const val WAKE_WAIT_MS = 2_000L
 
-    /** 模块 App 的 applicationId（广播 / Activity 跳转用）。 */
-    private const val MODULE_PACKAGE = "io.github.worldmargin.sparkflame"
+    /** 再等一次：冷启动可能只是慢，避免把「正在起」误判成「起不来」。 */
+    private const val WAKE_RETRY_MS = 1_500L
+
+    /** 模块 App 的 applicationId（广播 / Activity 跳转用；构建期注入）。 */
+    private val MODULE_PACKAGE: String get() = AuthGate.MODULE_PACKAGE
 
     /** 空页面的全限定类名：代码包名与 applicationId 不同，不能拼。 */
    
@@ -109,29 +114,24 @@ object AutoSparkBridge {
             preview = false,
         )
 
-    /** 按设置的刷新时机，把互动贴纸目录同步到模块缓存。 */
-    private fun syncStickers(context: Context) {
+    /**
+     * 把互动贴纸目录（名字 + 图片地址）推给模块，供脚本 `sticker()` / 面板查找。
+     *
+     * 只推 [usable] 里的（见 StickerCache）：官方下架的活动贴纸地址会 404，
+     * 这些既缓存不到图、发出去也是坏消息，直接从目录里去掉。
+     *
+     * 什么时候调用由 [ResourceSync] 决定；这里只负责推，返回是否成功。
+     */
+    internal fun syncStickerCatalog(
+        context: Context,
+        usable: Set<String>,
+    ): Boolean =
         runCatching {
-            val config = ConfigClient.read(context) ?: return
-            val meta = ConfigClient.stickerMeta(context)
-            val moduleVersion = com.worldmargin.autospark.BuildConfig.VERSION_NAME
-            val douyinVersion =
-                runCatching {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
-                }.getOrDefault("")
-            val at = meta?.optLong("at", 0L) ?: 0L
-            val expired =
-                config.resRefreshOnExpire &&
-                    config.resRefreshDays > 0 &&
-                    System.currentTimeMillis() - at > config.resRefreshDays * 86_400_000L
-            val need =
-                meta == null ||
-                    (config.resRefreshOnModule && meta.optString("moduleVersion") != moduleVersion) ||
-                    (config.resRefreshOnDouyin && meta.optString("douyinVersion") != douyinVersion) ||
-                    expired
-            if (!need) return
-            val items = StickerCatalog.items(context)
-            if (items.isEmpty()) return
+            val items =
+                StickerCatalog.items(context).filter { item ->
+                    usable.isEmpty() || com.worldmargin.autospark.core.StickerKey.md5(item.staticUrl) in usable
+                }
+            if (items.isEmpty()) return@runCatching false
             val arr = org.json.JSONArray()
             items.forEach { item ->
                 arr.put(
@@ -141,17 +141,25 @@ object AutoSparkBridge {
                         .put("animate", item.animateUrl),
                 )
             }
+            val moduleVersion = com.worldmargin.autospark.BuildConfig.VERSION_NAME
+            val douyinVersion =
+                runCatching {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+                }.getOrDefault("")
             ConfigClient.putStickers(context, arr.toString(), moduleVersion, douyinVersion)
-        }.onFailure { ModLog.w("贴纸目录同步失败：$it") }
-    }
+        }.getOrDefault(false)
 
     /** 贴纸目录 JSON（`[{name,static,animate}]`），供脚本 sticker()/ctx.sticker 查询。 */
     private fun stickerCatalogJson(): String =
         runCatching {
+            val context = HostRuntime.context!!
+            val usable = StickerCache.usableKeys(context)
             val arr = org.json.JSONArray()
-            StickerCatalog.items(HostRuntime.context!!).forEach { item ->
-                arr.put(org.json.JSONObject().put("name", item.name).put("static", item.staticUrl).put("animate", item.animateUrl))
-            }
+            StickerCatalog.items(context)
+                .filter { usable.isEmpty() || com.worldmargin.autospark.core.StickerKey.md5(it.staticUrl) in usable }
+                .forEach { item ->
+                    arr.put(org.json.JSONObject().put("name", item.name).put("static", item.staticUrl).put("animate", item.animateUrl))
+                }
             arr.toString()
         }.getOrDefault("[]")
 
@@ -161,9 +169,12 @@ object AutoSparkBridge {
         name: String,
     ): String {
         if (name.isBlank()) return ""
+        val usable = StickerCache.usableKeys(context)
         val item =
-            com.worldmargin.autospark.host.im.StickerCatalog.items(context).firstOrNull { it.name == name }
-                ?: return ""
+            com.worldmargin.autospark.host.im.StickerCatalog.items(context).firstOrNull { item ->
+                item.name == name &&
+                    (usable.isEmpty() || com.worldmargin.autospark.core.StickerKey.md5(item.staticUrl) in usable)
+            } ?: return ""
         val url =
             org.json.JSONObject()
                 .put("uri", item.staticUrl)
@@ -578,6 +589,8 @@ object AutoSparkBridge {
      * （IM 是分批吐会话的，一次扫描不能代表完整列表）。
      */
     fun refreshSnapshot(context: Context): RefreshOutcome {
+        // 兜底闸门：正常路径在 ModuleMain 就拦下了，这里再挡一次（防止别的入口绕过）
+        if (!AuthGate.allowed(context)) return RefreshOutcome(false, "签名校验未通过（模块可能被改包）")
         val fetched = fetchConversations()
         val conversations = fetched.conversations ?: return RefreshOutcome(false, fetched.error)
         if (conversations.length() == 0) return RefreshOutcome(false, "IM 会话列表为空（还没加载完）")
@@ -661,6 +674,18 @@ object AutoSparkBridge {
                             Thread({ sendNowAndNotify(context, targets) }, "spark-send").apply { isDaemon = true }.start()
                         }
 
+                        ConfigContract.ACTION_RES_SYNC -> {
+                            // App 刚起来，顺手把资源补一遍：它此刻在处理请求，回推一定有着落。
+                            // 它那边一张图都没有（重装 / 清数据）时强制补一轮，否则按刷新时机走。
+                            Thread(
+                                {
+                                    val missing = ConfigClient.stickerAssets(context).version == null
+                                    ResourceSync.maybeSync(context, force = missing)
+                                },
+                                "spark-res",
+                            ).apply { isDaemon = true }.start()
+                        }
+
                         "com.worldmargin.autospark.action.TEST_STICKER" -> {
                             val cid = intent.getStringExtra("conversation_id").orEmpty()
                             Thread(
@@ -697,6 +722,7 @@ object AutoSparkBridge {
                 addAction(ConfigContract.ACTION_REFRESH_SNAPSHOT)
                 addAction(ConfigContract.ACTION_SEND_NOW)
                 addAction(ConfigContract.ACTION_PING_HOST)
+                addAction(ConfigContract.ACTION_RES_SYNC)
                 addAction("com.worldmargin.autospark.action.DUMP_STICKER")
                 addAction("com.worldmargin.autospark.action.TEST_STICKER")
             }
@@ -772,18 +798,15 @@ object AutoSparkBridge {
     }
 
     /**
-     * 唤醒模块 App 进程。
-     *
-     * 宿主调模块的 ContentProvider 时，模块进程如果从没被创建过（重装 APK 后就是这种状态），
-     * Android 会拒绝解析 provider（日志里是 Failed to find provider info），配置就写不进去。
-     * 先发一个包内广播把模块进程拉起来（进程创建时系统会一并安装它的 provider），等它就绪再写。
-     */
-    /**
      * 叫醒模块进程（让它的 ContentProvider 安装上）。
      *
-     * 两级：先发 `ACTION_WAKE` 广播；模块 App 被系统置为「停用」
-     * （`adb install` 覆盖安装、`am force-stop` 之后都是）时广播会被丢掉，
-     * 这时改用启动一个透明空页面把进程拉起来（停用状态下只有启动 Activity 才管用）。
+     * 先发 `ACTION_WAKE` 定向广播（带 `FLAG_INCLUDE_STOPPED_PACKAGES`，覆盖安装后的「停用」状态也能收到），
+     * 再等它把 provider 装好。等不到通常只有两种情况：
+     * ① 模块 App 被系统置为「停用」（`adb install` 覆盖安装、`am force-stop` 之后）；
+     * ② 机型不允许跨应用启动 —— vivo / iQOO 的「关联启动」关掉时，
+     *    provider 调用会被拒（日志同样是 `Failed to find provider info`）。
+     *
+     * 本模块**不需要**「自启动」：平时不在后台跑，只在宿主调 provider 时被动拉起。
      */
     private fun wakeModule(context: Context) {
         ConfigClient.touchHost(context, System.currentTimeMillis())
@@ -796,9 +819,14 @@ object AutoSparkBridge {
         }.onFailure { ModLog.e("唤醒模块进程失败", it) }
         Thread.sleep(WAKE_WAIT_MS)
         if (ConfigClient.read(context) != null) return
-        // 只有确认模块 App 处于「停用」状态才提示；进程忙、IM 未就绪等其它原因不打扰
+        // 冷启动可能只是慢，再给一次机会，避免误报
+        Thread.sleep(WAKE_RETRY_MS)
+        if (ConfigClient.read(context) != null) return
+        // 两种可能：被停用；或机型禁止跨应用启动（「关联启动」关着），进程建不起来。
+        // 后者日志里同样是 "Failed to find provider info for …config"
         if (!isModuleStopped(context)) {
-            ModLog.w("模块配置不可读：模块 App 仍在运行，只是这一轮没读到")
+            ModLog.w("模块配置不可读：模块 App 进程未运行，且未被允许拉起")
+            hintModuleUnreachableOncePerDay(context)
             return
         }
         ModLog.w("模块 App 处于停用状态，配置不可读")
@@ -828,6 +856,24 @@ object AutoSparkBridge {
         com.worldmargin.autospark.core.DouToastHelper.show(
             context,
             "（星火燎原：模块 App 被系统停用，请打开一次）",
+        )
+    }
+
+    /**
+     * 模块 App 进程不在、且这次也没被拉起来时提示一次（每天最多一次）。
+     *
+     * 常见原因是机型把「关联启动」关掉了：vivo / iQOO 在
+     * 「设置 → 应用 → 星火燎原 → 设备管理 → 关联启动」，关着时宿主调 provider 会被拒。
+     * 打开一次 App 也能顶一阵。本模块**不需要**「自启动」。
+     */
+    private fun hintModuleUnreachableOncePerDay(context: Context) {
+        val today = dayFormat.format(Date())
+        val file = java.io.File(context.filesDir, "spark_module_unreachable_hint_day")
+        if (runCatching { file.readText().trim() }.getOrDefault("") == today) return
+        runCatching { file.writeText(today) }
+        com.worldmargin.autospark.core.DouToastHelper.show(
+            context,
+            "（星火燎原：模块未运行，请允许「关联启动」或打开一次 App）",
         )
     }
 
@@ -1092,6 +1138,8 @@ object AutoSparkBridge {
         only: Set<String> = emptySet(),
         ignoreSentToday: Boolean = false,
     ): JSONObject {
+        // 兜底闸门：未通过签名校验（且未授权）时不读配置、不碰会话、不发消息
+        if (!AuthGate.allowed(context)) return error("签名校验未通过（模块可能被改包）")
         val config = ConfigClient.read(context) ?: return error("配置读取失败（模块未安装或未启用）")
         if (respectEnabled && !config.enabled) return error("总开关未开启")
         if (AccountBridge.getCurrentUserId().isNullOrBlank()) return error("未登录")
@@ -1326,36 +1374,27 @@ object AutoSparkBridge {
     /**
      * 把抖音自己的小表情资源同步给模块 App。
      *
-     * 资源随抖音版本变化，所以不打包：宿主启动时比对版本，变了就分片推给模块 App，
+     * 资源随抖音版本变化，所以不打包：宿主比对版本，变了就分片推给模块 App，
      * App 写在 files/emoji/<version>/ 下，编辑器面板直接读这份缓存。
+     *
+     * 什么时候调用由 [ResourceSync] 决定（模块更新 / 抖音更新 / 过期）。
+     *
+     * @return 是否已完成：版本本来就一致、或整包推完为 true；中途失败 false（下次启动继续补）
      */
-    private fun syncEmojiAssets(context: Context) {
+    internal fun syncEmojiAssets(context: Context): Boolean =
         runCatching {
             val root = java.io.File(context.dataDir, "small_emoji_res")
             val emojiDir =
                 root.listFiles()
                     ?.mapNotNull { java.io.File(it, "emoji_android").takeIf { d -> d.isDirectory } }
-                    ?.firstOrNull() ?: return
+                    ?.firstOrNull() ?: return@runCatching true
             val info = java.io.File(emojiDir, "info.json")
-            if (!info.isFile) return
+            if (!info.isFile) return@runCatching true
             val json = org.json.JSONObject(info.readText())
             val version = json.optString("id")
-            if (version.isBlank()) return
-            if (ConfigClient.emojiVersion(context) == version) return
-            // 失败节流：同一版本 6 小时内只尝试一次，避免每次打开抖音都弹更新提示
-            val tryFile = java.io.File(context.filesDir, "spark_emoji_try.json")
-            val now = System.currentTimeMillis()
-            val last =
-                runCatching {
-                    org.json.JSONObject(tryFile.readText())
-                }.getOrNull()
-            if (last != null && last.optString("version") == version && now - last.optLong("at") < 6 * 60 * 60 * 1000L) {
-                return
-            }
-            runCatching {
-                tryFile.writeText(org.json.JSONObject().put("version", version).put("at", now).toString())
-            }
-            val stickers = json.optJSONArray("stickers") ?: return
+            if (version.isBlank()) return@runCatching true
+            if (ConfigClient.emojiVersion(context) == version) return@runCatching true
+            val stickers = json.optJSONArray("stickers") ?: return@runCatching true
             val staticDir = java.io.File(emojiDir, "static")
             val catalog = org.json.JSONArray()
             val files = mutableListOf<Pair<String, java.io.File>>()
@@ -1376,7 +1415,7 @@ object AutoSparkBridge {
                 catalog.put(org.json.JSONObject().put("code", code).put("name", name).put("file", uri))
                 files += uri to file
             }
-            if (files.isEmpty()) return
+            if (files.isEmpty()) return@runCatching true
 
             val buffer = java.io.ByteArrayOutputStream()
             java.util.zip.ZipOutputStream(buffer).use { zip ->
@@ -1413,7 +1452,7 @@ object AutoSparkBridge {
                     if (sentChunks > 0) {
                         com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：表情更新中断，下次重试）")
                     }
-                    return
+                    return@runCatching false
                 }
                 sentChunks++
                 val percent = ((index + 1) * 100) / total
@@ -1424,18 +1463,21 @@ object AutoSparkBridge {
             }
             com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：表情已更新，共 ${files.size} 个）")
             HostTrace.add(context, "表情资源已同步：${files.size} 个（版本 $version，$total 片）")
-        }.onFailure { ModLog.w("表情资源同步失败：$it") }
-    }
+            true
+        }.getOrDefault(false)
 
     /** 打开抖音后延迟自动执行一次（总开关关闭时内部直接返回），并刷新会话快照。 */
     fun scheduleOnAppStart() {
         val context = HostRuntime.context ?: return
+        if (!AuthGate.allowed(context)) {
+            ModLog.w("签名校验未通过，跳过自动续火花")
+            return
+        }
         Thread(
             {
                 wakeModule(context)
-                runCatching { syncEmojiAssets(context) }
-                runCatching { syncStickers(context) }
-                runCatching { syncEmojiAssets(context) }
+                // 表情 / 贴纸目录 / 贴纸图：按「刷新时机」触发，拉全后不再每次启动都查
+                runCatching { ResourceSync.maybeSync(context) }
                 HostTrace.start(context, "已安排：探测 IM 就绪，就绪即发送")
                 com.worldmargin.autospark.core.DouToastHelper.show(context, "（星火燎原：正在检测火花状态）")
                 runCatching {

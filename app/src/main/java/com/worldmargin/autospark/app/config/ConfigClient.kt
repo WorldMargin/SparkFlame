@@ -31,6 +31,19 @@ object ConfigClient {
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
 
+    /**
+     * 用户在 App 里是否已「无视风险」授权改包版本继续使用。
+     *
+     * 返回 null = 通道不可达（模块 App 被停用 / 从没启动过），调用方按未授权处理。
+     */
+    fun sigAccepted(context: Context): Boolean? =
+        runCatching {
+            val result = context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_SIG_STATE, null, null)
+                ?: return null
+            if (!result.getBoolean(ConfigContract.KEY_OK)) return null
+            result.getBoolean(ConfigContract.KEY_ACCEPTED)
+        }.getOrNull()
+
     fun markSent(
         context: Context,
         conversationId: String,
@@ -88,6 +101,7 @@ object ConfigClient {
             context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_SNAPSHOTS, null, extras)
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
+
     /** 已同步的抖音表情资源版本。 */
     fun emojiVersion(context: Context): String? =
         runCatching {
@@ -134,6 +148,70 @@ object ConfigClient {
                     putLong("at", System.currentTimeMillis())
                 }
             context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_STICKERS, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
+    /** 贴纸缩略图在模块侧的状态：[version] 为 null 表示一版都没同步过。 */
+    data class StickerAssets(
+        val version: String?,
+        val count: Int,
+    )
+
+    /** 查模块侧的缩略图状态（只在必要时用，正常推送不需要先查）。 */
+    fun stickerAssets(context: Context): StickerAssets =
+        runCatching {
+            val result =
+                context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_STICKER_ASSETS, null, null)
+                    ?: return StickerAssets(null, 0)
+            if (!result.getBoolean(ConfigContract.KEY_OK)) return StickerAssets(null, 0)
+            StickerAssets(
+                result.getString(ConfigContract.KEY_VERSION)?.takeIf { it.isNotBlank() },
+                result.getInt(ConfigContract.KEY_COUNT, 0),
+            )
+        }.getOrDefault(StickerAssets(null, 0))
+
+    /**
+     * 推一批贴纸缩略图（key = 图片对象名的 md5）。
+     *
+     * 分批而不是逐张：每批一个 Bundle，省掉几十次 binder 往返；单批控制在 ~200KB 以内，
+     * 避免撞上 1MB 的 transaction 上限。
+     */
+    fun putStickerImages(
+        context: Context,
+        images: Map<String, ByteArray>,
+    ): Boolean =
+        runCatching {
+            val bundle = Bundle()
+            images.forEach { (key, bytes) -> bundle.putByteArray(key, bytes) }
+            val extras =
+                Bundle().apply {
+                    putString(ConfigContract.KEY_OP, ConfigContract.OP_PUT)
+                    putBundle(ConfigContract.KEY_IMAGES, bundle)
+                }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_STICKER_ASSETS, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
+    /**
+     * 提交这一版：把暂存目录并进正式目录、清掉旧图、写版本。
+     *
+     * [keys] 是这一版需要的全部 key；不在里面的旧图会在这一步删掉。
+     */
+    fun commitStickerAssets(
+        context: Context,
+        version: String,
+        count: Int,
+        keys: List<String>,
+    ): Boolean =
+        runCatching {
+            val extras =
+                Bundle().apply {
+                    putString(ConfigContract.KEY_OP, ConfigContract.OP_COMMIT)
+                    putString(ConfigContract.KEY_VERSION, version)
+                    putInt(ConfigContract.KEY_COUNT, count)
+                    putStringArrayList(ConfigContract.KEY_KEYS, ArrayList(keys))
+                }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_STICKER_ASSETS, null, extras)
                 ?.getBoolean(ConfigContract.KEY_OK) == true
         }.getOrDefault(false)
 

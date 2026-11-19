@@ -3,7 +3,6 @@ package com.worldmargin.autospark.app.ui.preview
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.os.Bundle
 import android.text.SpannableStringBuilder
@@ -16,7 +15,6 @@ import android.widget.TextView
 import android.view.View
 import com.worldmargin.autospark.app.ui.common.DouyinStickers
 import org.json.JSONArray
-import java.net.URL
 
 /** 预览页：按发送分段展示文本 / 表情 / 互动贴纸。 */
 class PreviewActivity : Activity() {
@@ -129,12 +127,13 @@ class PreviewActivity : Activity() {
         box.addView(TextView(this).apply { text = "[互动表情] $name"; textSize = 12f; setTextColor(0xFF6B6B72.toInt()) })
         val url = stickerUrl(name)
         if (url != null) {
-            Thread {
-                runCatching {
-                    val bitmap = URL(url).openStream().use { BitmapFactory.decodeStream(it) }
-                    if (bitmap != null) runOnUiThread { image.setImageDrawable(BitmapDrawable(resources, bitmap)) }
-                }
-            }.start()
+            val cached = com.worldmargin.autospark.app.ui.common.StickerImageStore.load(this, url)
+            if (cached != null) {
+                image.setImageDrawable(BitmapDrawable(resources, cached))
+            } else {
+                // 宿主还没把图推过来：占位，下面已有「[互动表情] 名字」
+                image.setBackgroundColor(0x0F000000)
+            }
         }
         return box
     }

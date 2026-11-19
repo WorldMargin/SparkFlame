@@ -149,6 +149,9 @@
 - **继承项可以改、不能删**：改表达式 = 在这一层**覆盖**父模板的值（父模板不动），旁边「⟲ 还原」恢复。
 - **值是 JS 表达式**（不是固定字符串），能读完整的 `ctx`：
   `ctx.io.days > 100 ? "老朋友" : "朋友"`。
+- **和模板脚本共用同一个 `ctx`**：可以用 `ctx.builtin`、`ctx.functions.<名字>`、`ctx.io`，
+  也能引用前面已经算出来的变量（`ctx.template.vars.xxx`）。
+- **不能用 `ctx.macro`**：和模板段一致，变量表达式里读写宏变量会抛错，该变量按「没填」处理（`null`）。
 - **按上下顺序求值**：下面的表达式可以引用上面已经算出来的变量。
 - **会话的变量排在父模板之后**：同名时以会话的为准；**空表达式 = 没填**，回落到父模板，再没有就是 `null`。
 - **出错不中断**：某条表达式报错只让那个变量是 `null`，脚本照常执行。
@@ -159,8 +162,12 @@
 
 ### 4.3 保留策略
 
-- **会话模板与发送记录**：移出「已选目标」后，从移出那天起保留 **30 天**，到期清理；
-  从没被选中过的立即清理。
+- **会话模板与发送记录**：不在「已选目标」里时——
+  - 曾经选过 → 从**最后一次被选中**起保留 **30 天**，到期清理；
+  - 从没选过、但写过正文或变量 → 从**最后一次编辑**起保留 30 天（不会刚写完就没了）；
+  - 从没选过、也没写过内容 → 立即清理（误建的空记录）。
+
+  清理的只是这个会话自己的**模板正文与变量**以及发送记录；**快照、标签、备注都不受影响**。
 - **会话快照**：连续 **3 次**扫描都没在抖音出现 → 从列表里隐藏；连续 **30 天**没出现 →
   连快照一起删除（手动归属一起清掉）。中途出现一次就重新计数、恢复显示。
 - **「被隐藏」卡片**（续火花页底部，默认收起）：
@@ -190,14 +197,14 @@ ctx.system.mountMacro("宏 id", { conversation: "会话 id" });
 ctx.system.mountMacro("宏 id", { template: "模板 id" });              // 跟着派生会话一起跑
 ctx.system.mountMacro("宏 id", { template: "模板 id", inherit: false }); // 仅模板，不往派生会话传播
 ctx.system.unmountMacro("宏 id", { conversation: "会话 id" });
+ctx.system.unmountAll();                                              // 摘掉当前会话上的所有宏
+```
 
 **宏 id 怎么拿**：
 
 - 宏脚本自己：`ctx.macro.id`（模板段为空串）
 - 其它宏：`ctx.system.getMacros()` 列出全部宏，按 `name` 找 `id`，再传给 `mountMacro` / `unmountMacro`
 - 导出的配置 JSON 里也有 `macros[].id`
-ctx.system.unmountAll();                                              // 摘掉当前会话上的所有宏
-```
 
 - **宏自己的变量**：`ctx.macro.getvar / setvar / deletevar`，值按 JSON 存进配置、跨次保留，
   归属就是宏自己（另一个宏读不到）；**只有在宏脚本里能读写**，模板段调用会报错。
@@ -242,6 +249,20 @@ var 谁 = ctx.io.name || "朋友";
 ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，别忘了续上 🔥");
 ```
 
+**行 ≠ 段**（最容易踩的坑）：
+
+- `push` 进去的每一行，用 `\n` 拼成**同一条消息**；
+- 要发**多条消息**，用 `ctx.commit()` 切段（见「多段发送与贴纸」）。
+
+```js
+ctx.result.push("第一行");
+ctx.result.push("第二行");        // 一条消息，两行
+
+ctx.result.push("第一条消息");
+ctx.commit();
+ctx.result.push("第二条消息");    // 两条消息
+```
+
 ### 6.2 变量
 
 **`ctx.builtin` —— 引擎自己算的**
@@ -265,6 +286,9 @@ ctx.result.push("早安，" + 谁 + "！第 " + ctx.io.days + " 天的火花，�
 | `ctx.io.state` | number | 火花状态码：1 今天已互动 / 2 今天还没互动 / 3 待重燃 |
 | `ctx.io.stateText` | string | 火花状态文本 |
 | `ctx.io.peerUid` | string | 对方 UID |
+
+> `ctx.io` 只给常用字段。`tags`、`isGroup`、`selected`、`template` 等完整会话属性用
+> `ctx.system.getConversation(ctx.io.id)` 取（字段表见 6.3）。
 
 **`ctx.template` —— 模板变量与模板信息**
 
@@ -417,26 +441,60 @@ var need = ctx.system.getAllConversation(function (c) { return c.autoSend && c.d
 
 ### 互动贴纸 API
 
+`sticker(name)` 与 `ctx.sticker.get(name)` **完全等价**：按名字取一个贴纸对象，返回
+`{ type:"sticker", name, static, animate }`，找不到返回 `null`。用哪个都行，脚本里通常用短的 `sticker()`。
+
 ```js
-// 全局函数：取对象后直接 push，等价于 push({type:"sticker", name:"比心"})
+// 取对象后直接 push
 ctx.result.push(sticker("比心"));
 
-// 遍历 / 自己筛选
+// 或者显式写
+ctx.result.push({ type: "sticker", name: "比心" });
+```
+
+遍历 / 自己筛选用 `ctx.sticker.list()`：
+
+```js
 var all = ctx.sticker.list();
 var preferred = ctx.sticker.list(function (it) { return it.name.indexOf("火") >= 0; });
 ```
 
-`sticker()` 返回 `{ type:"sticker", name, static, animate }`；名字不在目录里时返回 `null`，脚本里记得判空。
+注意：`list()` 的元素是 `{ name, static, animate }`，**没有 `type`**，不能直接 push；
+要么取名字重新包一层，要么换成 `sticker(name)`：
+
+```js
+var s = preferred[0];
+ctx.result.push({ type: "sticker", name: s.name });   // 包一层
+// 等价：ctx.result.push(sticker(s.name));
+```
+
 
 ### 多段发送与贴纸
 
-`ctx.result` 默认作为**一段**文本发送；调用 `ctx.commit()` 可以切段，一个会话最多发送「设置 → 发送分段 → 每会话最多 commit 次数」段，超出的内容由引擎合并到最后一段。
+`ctx.result` 默认作为**一段**文本发送。三个方法都只影响「怎么切段」，区别在缓冲和脚本是否继续：
+
+| 方法 | 作用 | 缓冲 | 脚本 |
+| --- | --- | --- | --- |
+| `ctx.commit()` | 把当前缓冲提交为一段，返回 `{ handle, index }` | **清空**，后续 `push` 进入下一段 | 继续执行 |
+| `ctx.submit()` | 提交当前缓冲为最后一段，然后结束脚本 | 清空 | 立即结束，后面的代码不执行 |
+| `ctx.exit()` | 放弃本轮全部发送（**包括已经 commit 的段**） | 清空 | 立即结束 |
+
+脚本自然结束时，引擎会把剩下的缓冲**自动提交**为最后一段 —— 所以「只 push、不 commit」就是一条消息。
+
+什么时候用哪个：
+
+- **一条消息、多行** → 只 `push`，三个方法都不调用
+- **多条消息** → 每段末尾 `commit()`
+- **这段发完就收工**，后面的代码不想跑（比如某个分支里）→ `submit()`
+- **判断出这条不该发**，连已提交的段也要撤回 → `exit()`
+
+一个会话最多发送「运行设置 → 每会话最多 commit 次数」段；超出的文本会并入最后一段，不会丢。
 
 ```js
 ctx.result.push("第一段");
-var h1 = ctx.commit();          // { handle: "seg-1", index: 1 }
+var h1 = ctx.commit();          // 提交为第 1 段、缓冲清空；返回 { handle: "seg-1", index: 1 }
 
-ctx.result.push("第二段");
+ctx.result.push("第二段");       // 进入第 2 段
 var h2 = ctx.commit();
 
 ctx.registerCallback(function (res) {
@@ -722,9 +780,19 @@ A：常见原因：① 它还没写文案（没模板正文、也没挂宏）；
 A：抖音冷启动、回到前台、跨天、手动刷新/发送时各扫一轮（回前台有 10 秒限流，自动任务刚跑完 60 秒内不重复）。
 界面内切换页面只刷新快照，不重复扫描。
 
+**Q：需要给模块 App 开「自启动」吗？**
+A：**不需要**。「自启动」是让 App 自己起来，而本模块平时不在后台跑：
+抖音启动时通过 provider 临时把模块进程拉起来同步配置与贴纸图，推完就退回缓存态。
+真正需要开的是 **「关联启动」**（vivo / iQOO：设置 → 应用 → 星火燎原 → 设备管理 → 关联启动）。
+它关着时，抖音调 provider 会被系统拒绝，贴纸图和配置要等你下次打开 App 才同步。
+
 **Q：覆盖安装后第一次打开抖音没有自动发？**
 A：`adb install` 覆盖安装 / 强制停止会把模块 App 置为「停用」，广播和 provider 都会被系统丢掉。
 先打开一次模块 App（桌面图标），再回抖音即可；之后不会再弹「是否跳转」。
+
+**Q：贴纸图 / 表情图为什么要等几秒？**
+A：模块**不申请网络权限**，图由抖音侧下载后推给模块（首次约几秒）。
+同步完成后写进模块本地缓存，之后打开面板直接显示，不再等待。
 
 **Q：会话突然不见了？**
 A：它被「隐藏」了：连续 3 次扫描没在抖音出现就会收进续火花页底部的「被隐藏」卡片，
@@ -735,9 +803,17 @@ A：头像与备注来自抖音的会话数据，重启抖音后点「刷新会�
 
 ## 十、数据与文件位置
 
-- 配置与快照：`/data/data/io.github.worldmargin.sparkflame/files/spark_config.json`（单文件，跨进程共享）。
+- 配置与快照：`/data/data/io.github.worldmargin.sparkflame/files/spark_config.json`。
+  **单写者**：这个文件只由 App 进程读写；抖音进程通过 provider 上报会话快照、发送结果与「今日已发」，
+  由 App 落盘。两边不会同时改同一个文件。
+- 贴纸与表情缓存（App 侧）：`files/sticker/`、`files/emoji/`，由抖音进程下载后推过来。
 - 发送记录：配置里的 `sentDays`（每个会话记录最后一次发送日期，每天只发一次）。
-- 「今天是否已自动跑过」：抖音自己目录下的 `spark_last_auto_day`（跟着抖音的数据走）。
+- 宿主自己的状态（**不是配置**，跟着抖音的数据走）：
+  - `files/spark_last_auto_day`：上次自动跑过的日期（跨天判断用）
+  - `files/spark_res_state.json`：资源同步进度（模块版本 / 抖音版本 / 是否拉全）
+  - `files/spark_sticker_cache/`、`files/spark_sticker_keys.json`：贴纸图下载缓存与可用列表
+
+  这些在抖音的数据目录下，卸载 / 清抖音数据会丢，不影响模块配置，下次启动会自己重建。
 - 卸载模块 App 会一并清掉配置（抖音里的登录态不受影响）。
 
 ---

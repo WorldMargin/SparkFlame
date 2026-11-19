@@ -14,22 +14,20 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.widget.ImageView
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 
 /**
- * 头像加载器：内存缓存 → 磁盘缓存 → 网络下载（成功即落盘）。
+ * 头像加载器：内存缓存 → 磁盘缓存 → 名字首字占位图。
  *
- * 请求不到时用「名字首字 + 色块」的占位图，界面上不会出现空洞。
+ * 模块不申请 `INTERNET`，这里**不做任何网络请求**：之前联网时存下来的头像继续用，
+ * 没有的直接显示色块首字，界面上不会出现空洞。
  */
 object AvatarLoader {
     private val memory = LruCache<String, Bitmap>(96)
     private val pool = Executors.newFixedThreadPool(3)
     private val main = Handler(Looper.getMainLooper())
 
-    private const val TIMEOUT_MS = 8_000
     private const val MAX_EDGE = 256
 
     /** 把 [url] 的头像装进 [view]；失败/为空时显示 [name] 首字占位图。头像按圆形显示。 */
@@ -53,7 +51,7 @@ object AvatarLoader {
 
         pool.execute {
             val cache = File(avatarDir(context), fileName(url))
-            val bitmap = if (cache.isFile) decode(cache) else download(url)?.also { save(cache, it) }
+            val bitmap = if (cache.isFile) decode(cache) else null
             if (bitmap == null) return@execute
             memory.put(memoryKey(url, name, size), bitmap)
             main.post {
@@ -121,27 +119,6 @@ object AvatarLoader {
                 }
             BitmapFactory.decodeFile(file.absolutePath, options)
         }.getOrNull()
-
-    private fun download(url: String): Bitmap? =
-        runCatching {
-            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-            }
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        }.getOrNull()
-
-    private fun save(
-        file: File,
-        bitmap: Bitmap,
-    ) {
-        runCatching {
-            file.parentFile?.mkdirs()
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        }
-    }
 
     private fun avatarDir(context: Context): File = File(context.cacheDir, "avatars")
 

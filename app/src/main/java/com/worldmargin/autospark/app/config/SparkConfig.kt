@@ -504,11 +504,14 @@ data class SparkConfig(
         snapshots.filter { !it.isGroup && !it.isHidden && needsRenewal(it) }.map { it.conversationId }.toSet()
 
     /**
-     * 数据保留策略（用户确认过的口径）：
+     * 数据保留策略：
      * - 在「已选目标」里：给它的会话模板打上「最后一次在已选目标的时间」；
-     * - 不在「已选目标」里：从没被选中过 → 立即清；曾经选中过 → 从**最后一次被选中**起算，
-     *   满 [TEMPLATE_GRACE_MS] 才清。
-     * 清理范围：会话模板 + 该会话的发送记录。**快照不参与清理**（它就是两个列表的显示来源）。
+     * - 不在「已选目标」里：
+     *   - 从没选中过、也没写过任何内容 → 立即清（误建的占位记录）；
+     *   - 写过正文 / 变量 → 从**最后一次编辑**起算，满 [TEMPLATE_GRACE_MS] 才清；
+     *   - 曾经选中过 → 从**最后一次被选中**起算，满 [TEMPLATE_GRACE_MS] 才清。
+     * 清理范围：会话模板（正文 + 变量） + 该会话的发送记录。
+     * **快照、标签、备注不参与清理**（它们属于会话本身，不是模板）。
      */
     fun pruneTemplates(now: Long): SparkConfig {
         val selected = selectedIds()
@@ -525,8 +528,19 @@ data class SparkConfig(
                         template.copy(selectedAt = now)
                     }
                 } else {
-                    val lastSelected = template.selectedAt
-                    if (lastSelected == 0L || now - lastSelected > TEMPLATE_GRACE_MS) {
+                    // 从没进过「已选目标」的：分三种
+                    //  - 空记录（没正文、没变量）→ 立即清，属于误建的占位
+                    //  - 用户写过东西 → 从最后一次编辑起算 30 天，别让人白写
+                    //  - 老配置没有 updatedAt → 不敢按 0 算，先留着
+                    val hasContent = template.body.isNotBlank() || template.variables.isNotEmpty()
+                    val expireAt =
+                        when {
+                            template.selectedAt > 0L -> template.selectedAt + TEMPLATE_GRACE_MS
+                            hasContent && template.updatedAt > 0L -> template.updatedAt + TEMPLATE_GRACE_MS
+                            hasContent -> Long.MAX_VALUE
+                            else -> 0L
+                        }
+                    if (now > expireAt) {
                         changed = true
                         dropped += id
                         null

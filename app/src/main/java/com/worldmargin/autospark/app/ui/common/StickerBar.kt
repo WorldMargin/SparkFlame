@@ -401,17 +401,14 @@ private fun stickerCell(
             }
         addView(image)
         if (icon == null && !imageUrl.isNullOrBlank()) {
-            Thread {
-                runCatching {
-                    val bitmap =
-                        java.net.URL(imageUrl).openStream().use { android.graphics.BitmapFactory.decodeStream(it) }
-                    if (bitmap != null) {
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            runCatching { image.setImageBitmap(bitmap) }
-                        }
-                    }
-                }
-            }.apply { isDaemon = true }.start()
+            // 图由宿主下载后推过来（模块不联网），这里只读本地缓存
+            val cached = StickerImageStore.load(context, imageUrl)
+            if (cached != null) {
+                image.setImageBitmap(cached)
+            } else {
+                // 还没同步到 / 同步失败：留一块浅色占位，名字在下面一行
+                image.setBackgroundColor(0x0F000000)
+            }
         }
         addView(
             context.text(name, 11f, COLOR_TEXT).apply {

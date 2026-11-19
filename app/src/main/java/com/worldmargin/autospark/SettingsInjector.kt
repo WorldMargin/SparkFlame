@@ -12,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.worldmargin.autospark.host.bridge.AutoSparkBridge
+import com.worldmargin.autospark.core.AuthGate
 import com.worldmargin.autospark.core.ModLog
 import com.worldmargin.autospark.app.ui.settings.SparkSettingsActivity
 import java.lang.reflect.Method
@@ -26,8 +27,10 @@ object SettingsInjector {
     private const val SETTING_ACTIVITY = "com.ss.android.ugc.aweme.setting.ui.DouYinSettingNewVersionActivity"
     private const val COMMON_ITEM_VIEW = "com.bytedance.ies.dmt.ui.common.views.CommonItemView"
     private const val MODULE_ENTRY_TAG = "doumcp_settings_entry"
-    private const val MODULE_PACKAGE = "io.github.worldmargin.sparkflame"
     private const val DEFAULT_ICON_SIZE_PX = 48
+
+    /** 模块包名（构建期注入）。 */
+    private val MODULE_PACKAGE: String get() = AuthGate.MODULE_PACKAGE
 
     /**
      * 定位宿主设置页的 onCreate 方法（hook 目标）。

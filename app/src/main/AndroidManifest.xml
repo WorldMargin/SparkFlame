@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 会话头像：优先从 CDN 拉取，失败则用本地缓存 -->
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        不申请任何权限：模块只读写自己的配置 / 缓存，不发网络请求。
+        进度头像走「本地缓存 → 名字首字占位图」，没有网也能用。
+    -->
 
     <application
         android:description="@string/spark_description"
@@ -12,7 +14,7 @@
         <!-- 配置跨进程通道：管理界面（模块进程）写，宿主（抖音进程）读 -->
         <provider
             android:name=".app.provider.ConfigProvider"
-            android:authorities="io.github.worldmargin.sparkflame.config"
+            android:authorities="${applicationId}.config"
             android:exported="true" />
 
         <!-- 宿主写配置前先唤醒本模块进程（见 WakeReceiver 注释），否则 provider 调不通 -->

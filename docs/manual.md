@@ -18,6 +18,17 @@
 3. 到 **设置** 页打开 **总开关**（默认关闭），打开后才会自动发送。
 4. 到 **设置** 页点一次 **刷新会话**，让抖音把会话列表、头像、火花天数写进模块。
 
+> **安全提示（使用前请读）**
+>
+> 注意到近期下游仓库推出使用 root 权限进行的定时续火花；同时出现许多第三方下载站对本仓库 APK 进行分发。
+> 对于可能注入恶意代码的情况，授权 root 可能造成多平台的信息泄露。
+>
+> 为减少因第三方分发改包注入恶意代码造成的损失和信息泄露，本仓库自 **1.5.9 之后**加入签名校验：
+> 签名校验不通过的包需要您**手动授权**，否则宿主侧代码不会运行。
+> 如果您需要使用下游仓库的 root 功能，请仔细校验是否为原仓库分发，或自行下载编译源代码。
+>
+> 如您确有改包需求，**不建议直接改包**，而是 fork 或下载源代码自行更改编译。
+
 > **抖音没在运行时会怎样**：模块和抖音是两个进程，续火花、刷新会话都要抖音进程来执行。
 > 界面在发送 / 刷新前会先探活：抖音不在就不下指令，而是提示你 **先打开抖音**（可以直接点「打开抖音」），
 > 打开并等它就绪后会自动把刚才那件事做完。
@@ -231,7 +242,7 @@ ctx.result.push(ctx.io.name + "，距离元旦还有 " + ctx.functions.daysTo("2
 
 - **只能有一个函数**：声明之后再写第二个函数或别的语句，保存时会报错并指出位置；
 - 名字与形参由声明决定，不用另外填；说明（可选）会出现在编辑器的补全提示里；
-- 早期版本只存了「函数内部」，打开会自动补成完整声明，可以继续编辑。
+- 函数声明必须完整（`function 名字(...) { … }`），只写函数体保存不了。
 
 ## 六、脚本 API
 
@@ -302,7 +313,7 @@ ctx.result.push("第二条消息");    // 两条消息
 
 | 调用 | 说明 |
 | --- | --- |
-| `ctx.system.getAllConversation(filter?)` | 本轮可见的会话数组；推荐传函数逐项过滤，对象筛选仅兼容保留 |
+| `ctx.system.getAllConversation(filter?)` | 本轮可见的会话数组；可传函数逐项过滤 |
 | `ctx.system.getConversation(id)` | 按会话 id 取详细信息，没有返回 `null` |
 | `ctx.system.getTemplate(id)` | 按模板 id 取：`{ id, name, body, childs, isBuiltin }` |
 | `ctx.system.getMacro(id)` | 按宏 id 取：`{ id, name, body, templates, conversations }` |
@@ -347,7 +358,15 @@ ctx.result.push("第二条消息");    // 两条消息
 
 `getConversation(id)` 额外带 `template` / `parent` / `macros` 三块。
 
-**筛选**：推荐传函数 `function (c) { return ... }`；对象写法（含 `tags.include/except`）仅为兼容保留，下个版本移除。返回类型都是 `SparkConversation[]`（新数组，不改原列表）。
+**筛选**：传函数 `function (c) { return ... }` 逐项判断；传其它类型会直接报错。返回 `SparkConversation[]`（新数组，不改原列表）。
+
+按标签筛选的写法（标签是数组，用 `some` / `every`）：
+
+```js
+var 标 = ctx.system.getAllConversation(function (c) {
+  return c.tags.some(function (t) { return t.name === "朋友"; });
+});
+```
 
 对象里能用的键（就是会话字段；值的写法见下表）：
 
@@ -685,7 +704,7 @@ ctx.builtin.countdown(target)         距目标日期还有几天（已过为负
 ctx.builtin.nextNewYear()             下一个元旦的日期字符串
 ctx.builtin.untilNewYear()            距下一个元旦还有几天
 ctx.builtin.formatDate(date, pattern) 按 yyyy/MM/dd/HH/mm/ss 格式化日期
-ctx.system.getAllConversation(filter?) 本轮会话，返回 SparkConversation[]；filter 推荐传函数逐项判断（对象筛选仅兼容保留）
+ctx.system.getAllConversation(filter?) 本轮会话，返回 SparkConversation[]；filter 传函数逐项判断
 ctx.system.getConversation(id)        按会话 id 取详细信息
 ctx.system.getMacros()                 所有宏的数组（id / name / appliesTo / templateOnly）
 ctx.emoji.list()                       全部抖音表情 [{code,name,pinyin}]
@@ -800,6 +819,10 @@ A：它被「隐藏」了：连续 3 次扫描没在抖音出现就会收进续�
 
 **Q：头像 / 备注不更新？**
 A：头像与备注来自抖音的会话数据，重启抖音后点「刷新会话」即可刷新。
+
+**Q：打开 App 弹「签名校验出错」？**
+A：这份 APK 不是本仓库签发，可能来自第三方下载站改包。若确认来源可信，可点「无视风险」手动授权；
+未经授权宿主侧代码不会运行。确有改包需求建议 fork 源码自行编译，而不是直接改 APK。
 
 ## 十、数据与文件位置
 

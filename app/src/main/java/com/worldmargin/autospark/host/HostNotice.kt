@@ -22,7 +22,7 @@ object HostNotice {
     private const val NOTICE_ID = "v1.5.7"
 
     private const val TITLE = "星火燎原已更新"
-    private const val BODY = "表情面板支持搜索，并会从抖音同步表情资源；会话筛选建议改用函数，旧的对象筛选下个版本移除。"
+    private const val BODY = "表情面板支持搜索，并会从抖音同步表情资源；脚本筛选会话请传函数。"
 
     private const val FILE = "spark_notice_id"
 

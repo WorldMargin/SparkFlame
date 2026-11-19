@@ -1,5 +1,8 @@
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.Signature
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -53,6 +56,82 @@ if (signatureSha256.isBlank()) {
     )
 }
 
+/**
+ * 内容指纹：把「会原样进 APK 的资源」按固定顺序哈希，构建期注入 BuildConfig。
+ *
+ * 运行时用同一套规则读 APK 里的条目重算，签名之外再验一层资源完整性。
+ * 只取原样复制的条目（编译过的 res 不在此列），否则两次算出来的字节不一样。
+ */
+val contentEntries: List<Pair<String, File>> =
+    buildList {
+        rootProject.file("docs/manual.md").takeIf { it.isFile }?.let { add("assets/docs/manual.md" to it) }
+        rootProject.file("app/src/main/assets/cm6")
+            .walkTopDown()
+            .filter { it.isFile }
+            .forEach { add("assets/cm6/" + it.relativeTo(rootProject.file("app/src/main/assets/cm6")).path.replace('\\', '/') to it) }
+        // META-INF/xposed 不参与：java_init.list 会被 R8 按混淆结果改写，源码与 APK 不一致
+    }.sortedBy { it.first }
+
+fun computeContentSha256(): String =
+    MessageDigest.getInstance("SHA-256").let { md ->
+        contentEntries.forEach { (name, file) ->
+            md.update(name.toByteArray(Charsets.UTF_8))
+            md.update(file.readBytes())
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+val contentSha256: String = computeContentSha256()
+
+/**
+ * 预生成阶段：把内容哈希用发布私钥签名，连同证书一起写进 APK（assets/spark/integrity.json）。
+ *
+ * 运行时先验清单的证书指纹与签名，再验资源哈希 —— 改了资源就得拿私钥重签清单，
+ * 光换 APK 签名或 hook 包管理器都过不了。
+ */
+val integrityAssetDir = layout.buildDirectory.dir("generated/integrity/assets")
+val generateIntegrity =
+    tasks.register("generateIntegrity") {
+        val outFile = integrityAssetDir.map { it.file("spark/integrity.json") }
+        outputs.file(outFile)
+        // 声明输入：fork 改了资源或换 keystore，下次构建必须重签，不能被增量构建跳过
+        releaseSigning?.let { signing ->
+            inputs.files(contentEntries.map { it.second } + rootProject.file(signing.getProperty("storeFile")))
+            inputs.property("keyAlias", signing.getProperty("keyAlias"))
+        }
+        onlyIf { releaseSigning != null }
+        doLast {
+            val signing = releaseSigning ?: return@doLast
+            val store = rootProject.file(signing.getProperty("storeFile"))
+            val storePass = signing.getProperty("storePassword")
+            val alias = signing.getProperty("keyAlias")
+            val keyPass = signing.getProperty("keyPassword")
+            val keyStore = KeyStore.getInstance(store, storePass.toCharArray())
+            val privateKey = keyStore.getKey(alias, keyPass.toCharArray()) as PrivateKey
+            val certificate = keyStore.getCertificate(alias)
+
+            val digest = computeContentSha256()
+            val algorithm =
+                if (privateKey.algorithm.equals("EC", ignoreCase = true)) "SHA256withECDSA" else "SHA256withRSA"
+            val signature =
+                Signature.getInstance(algorithm).apply {
+                    initSign(privateKey)
+                    update(digest.toByteArray(Charsets.UTF_8))
+                }.sign()
+
+            val json =
+                buildString {
+                    append("{\"sha256\":\"").append(digest).append("\",")
+                    append("\"sig\":\"").append(Base64.getEncoder().encodeToString(signature)).append("\",")
+                    append("\"cert\":\"").append(Base64.getEncoder().encodeToString(certificate.encoded)).append("\"}")
+                }
+            outFile.get().asFile.apply {
+                parentFile.mkdirs()
+                writeText(json)
+            }
+        }
+    }
+
 android {
     namespace = "com.worldmargin.autospark"
     buildToolsVersion = "37.0.0"
@@ -74,8 +153,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // 固定版本号：历史压缩后提交数会变小，不能再拿它当 versionCode（会触发降级安装失败）
-        versionCode = 11109
-        versionName = "v1.6.0"
+        versionCode = 11110
+        versionName = "v1.6.1"
 
         // 模块标识一律通过 BuildConfig 注入，源码里不写死
         buildConfigField("String", "MODULE_PACKAGE", "\"$modulePackage\"")
@@ -83,6 +162,16 @@ android {
         buildConfigField("String", "MAINTAINER", "\"$maintainer\"")
         buildConfigField("String", "REPO_URL", "\"$repoUrl\"")
         buildConfigField("String", "SIGNATURE_SHA256", "\"$signatureSha256\"")
+        buildConfigField("String", "CONTENT_SHA256", "\"$contentSha256\"")
+        buildConfigField("Boolean", "INTEGRITY_ENABLED", "${releaseSigning != null}")
+    }
+
+    // 预生成的内容签名清单作为 assets 打进 APK
+    sourceSets {
+        getByName("main") {
+            @Suppress("DEPRECATION")
+            assets.srcDir(integrityAssetDir.get().asFile)
+        }
     }
 
     // 按 ABI 分包：arm64-v8a / armeabi-v7a 各出一个 APK
@@ -163,4 +252,4 @@ val syncManual =
         dependsOn(syncManualToRepo)
     }
 
-tasks.named("preBuild") { dependsOn(syncManual, syncManualToRepo) }
+tasks.named("preBuild") { dependsOn(syncManual, syncManualToRepo, generateIntegrity) }

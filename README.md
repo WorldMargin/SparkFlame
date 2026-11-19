@@ -1,13 +1,24 @@
 # 星火燎原（抖音自动续火花）
 
 一个 LSPosed 模块：注入抖音进程，**自动给「今天还没互动」的会话续火花**（发一条你自己写的文案）。
-文案是一段 JavaScript，可以用模板、变量、宏和自定义函数组合出来 —— 目标就是「每天自动续，但话说得像真人说的」。
+文案是一段 JavaScript，可以用模板、变量、宏和自定义函数组合出来 —— 在续火花的同时拥有更高的自定义能力。
 
 > **文档**：[`docs/manual.md`](docs/manual.md) —— 安装、界面、模板 / 变量 / 宏 / 函数、
 > **完整的脚本 API**（`ctx.result`、会话筛选、发送结果回调），以及一节**可直接贴给 AI 的提示词**。
 > **要写模板的 AI 请先读这份。**
 
 > **仓库**：[Gitee（主）](https://gitee.com/WorldMargin/SparkFlame) · [GitHub（镜像）](https://github.com/WorldMargin/SparkFlame)
+
+> **安全提示（使用前请读）**
+>
+> 注意到近期下游仓库推出使用 root 权限进行的定时续火花；同时出现许多第三方下载站对本仓库 APK 进行分发。
+> 对于可能注入恶意代码的情况，授权 root 可能造成多平台的信息泄露。
+>
+> 为减少因第三方分发改包注入恶意代码造成的损失和信息泄露，本仓库自 **1.5.9 之后**加入签名校验：
+> 签名校验不通过的包需要您**手动授权**，否则宿主侧代码不会运行。
+> 如果您需要使用下游仓库的 root 功能，请仔细校验是否为原仓库分发，或自行下载编译源代码。
+>
+> 如您确有改包需求，**不建议直接改包**，而是 fork 或下载源代码自行更改编译。
 
 ## 下载
 
@@ -21,6 +32,16 @@
   .\build_doumcp.ps1 -Variant release   # R8 优化包（app\build\outputs\apk\release\）
   .\build_doumcp.ps1                    # debug 包（默认）
   ```
+
+**自行编译需要改动的文件**（其余源码不用动，包名 / 宿主 / 维护者 / 仓库 / 指纹都从 `BuildConfig` 读）：
+
+| 文件 | 改什么 |
+| --- | --- |
+| `gradle.properties` | `spark.modulePackage`（同时决定 applicationId 和 provider authority）、`spark.hostPackage`、`spark.maintainer`、`spark.repoUrl`；`spark.signatureSha256` 留空，构建时从 keystore 自动算 |
+| `release-signing.properties` + 自己的 `.keystore` | release 签名。两者都不入库，fork 必须自备；缺失时签名闸门与内容签名清单会跳过，只适合本机调试 |
+| `local.properties` | 本机 Android SDK 路径（不入库） |
+| `app/build.gradle.kts` | 只在发版时改 `versionCode` / `versionName`；内容哈希与签名清单由构建任务自动生成 |
+| `docs/manual.md` | 改了功能就同步这里，构建时复制进 App 内文档 |
 
 ## 署名与来源
 
@@ -54,9 +75,9 @@
     归属就是宏自己；宏编辑页有独立入口可视化改 / 删 / 新增，删宏时连带清掉
 - **自定义函数**：全局定义（只允许一个），执行前注入成 `ctx.functions.<名字>`，供模板 / 宏 / 变量调用
 - **脚本上下文**（按来源分命名空间）：
-  - `ctx.result`：要发的文案列表（`$spark_result$` 是同一数组，老脚本兼容）
+  - `ctx.result`：要发的文案列表
   - `ctx.builtin`：日期时间 + 内置函数；`ctx.io`：抖音给的会话数据；`ctx.template.vars`：模板 / 会话变量
-  - `ctx.system`：`getAllConversation(filter?)`（按字段 / 函数筛选，标签用 `tags.include` / `tags.except`，内层交集、外层并集）、
+  - `ctx.system`：`getAllConversation(filter?)`（filter 传函数逐项判断，标签用 `c.tags.some(...)`）、
     `getConversation/getTemplate/getMacro(id)`、
     `mountMacro / unmountMacro / unmountAll`
   - `ctx.registerCallback(fn)`：会话处理结束后回调 `{ conversationId, result: "Succeed"|"Skipped"|"Failed", reason? }`

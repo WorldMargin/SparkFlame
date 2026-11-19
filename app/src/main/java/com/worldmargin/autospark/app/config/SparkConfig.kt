@@ -70,7 +70,7 @@ data class ConversationTemplate(
 /**
  * 宏：一段独立的小脚本，可以挂到**多个模板**（模板 id）或**某个会话**（会话 id）上。
  *
- * 执行顺序是「自定义函数注入 → 模板脚本 → 宏（按顺序）」，所以宏能改写 `$spark_result$`。
+ * 执行顺序是「自定义函数注入 → 模板脚本 → 宏（按顺序）」，所以宏能改写 `ctx.result`。
  * 典型用法是节日倒计时这种临时性内容：用完把宏删掉，模板一个字都不用动。
  */
 data class MacroScript(
@@ -84,8 +84,6 @@ data class MacroScript(
      * **不往派生会话传播**（传播的那种写在 [appliesTo] 里）。
      */
     val templateOnly: Set<String> = emptySet(),
-    /** 脚本编辑器用 WebView；保留字段仅为兼容旧配置。 */
-    val useMonacoEditor: Boolean = true,
     val updatedAt: Long = 0L,
 )
 
@@ -464,9 +462,8 @@ data class SparkConfig(
     /**
      * 组装程序：函数注入 + [body] + [macros]（预览与发送共用同一份逻辑）。
      *
-     * 每个宏之前插一句**结果归一化**：结果变量按列表设计（模板里用 `.push()`），
-     * 万一某个模板写成 `$spark_result$ = "…"`，宏执行前会被自动包成单元素列表，
-     * 于是宏里可以放心 `.push()`，不需要自己判断类型。
+     * 每个宏之前插一句**结果归一化**：脚本可能把 `ctx.result` 换成字符串或新数组，
+     * 宏执行前统一成列表，于是宏里可以放心 `.push()`，不需要自己判断类型。
      */
     fun composeProgram(
         body: String,
@@ -615,10 +612,7 @@ data class SparkConfig(
             return merged.values.toList()
         }
 
-        /**
-         * 宏执行前把「结果列表」的两个引用同步一次
-         *（`$spark_result$` 与新写法 `ctx.result` 是同一个数组；脚本可能把其中一个换成了字符串 / 新数组）。
-         */
+        /** 宏执行前把 `ctx.result` 归一成列表（脚本可能换成字符串或新数组）。 */
         private const val RESULT_NORMALIZE = "__sparkSyncResult();"
     }
 }

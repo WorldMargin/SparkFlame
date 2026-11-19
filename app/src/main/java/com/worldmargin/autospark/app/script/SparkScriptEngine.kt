@@ -499,7 +499,7 @@ object SparkScriptEngine {
             Doc(
                 "getAllConversation",
                 "filter?: (conversation) => boolean",
-                "本轮会话（SparkConversation[]）；不传返回全部，传函数逐项过滤；对象筛选（含 tags.include/except）仅为兼容保留，下个版本移除",
+                "本轮会话（SparkConversation[]）；不传返回全部，传函数逐项过滤",
                 "SparkConversation[]",
                 SYSTEM_OBJ,
             ),
@@ -805,62 +805,13 @@ object SparkScriptEngine {
           var hit = table[String(id)];
           return hit || null;
         }
-        // 兼容层：旧的对象筛选（tags.include/except、字段相等/数组任一）保留一个版本，
-        // 新脚本请直接用函数过滤；下一个版本会移除对象写法。
-        function __tagHit(item, tag){
-          var list = item.tags || [];
-          for (var i = 0; i < list.length; i++){
-            var t = list[i];
-            if (t && (String(t.id) === String(tag) || String(t.name) === String(tag))) return true;
-          }
-          return false;
-        }
-        function __tagGroups(value){
-          if (!value || !value.length) return [];
-          return (typeof value[0] === "string") ? [value] : value;
-        }
-        function __matchTagGroups(item, groups){
-          var list = __tagGroups(groups);
-          if (!list.length) return true;
-          for (var i = 0; i < list.length; i++){
-            var group = list[i];
-            if (typeof group === "string") group = [group];
-            if (!group.length) return true;
-            var ok = true;
-            for (var j = 0; j < group.length; j++){
-              if (!__tagHit(item, group[j])){ ok = false; break; }
-            }
-            if (ok) return true;
-          }
-          return false;
-        }
-        function __matchConversation(item, filter){
-          if (!filter) return true;
-          for (var key in filter){
-            if (!Object.prototype.hasOwnProperty.call(filter, key)) continue;
-            if (key === "tags") continue;
-            var want = filter[key];
-            if (typeof want === "function"){ if (!want(item[key])) return false; continue; }
-            var actual = item[key];
-            if (Object.prototype.toString.call(want) === "[object Array]"){
-              if (want.indexOf(actual) < 0) return false;
-            } else if (actual !== want){
-              return false;
-            }
-          }
-          var tagCond = filter.tags;
-          if (tagCond && Object.prototype.toString.call(tagCond) === "[object Array]") tagCond = { include: tagCond };
-          if (tagCond){
-            if (tagCond.include && !__matchTagGroups(item, tagCond.include)) return false;
-            if (tagCond.except && __matchTagGroups(item, tagCond.except)) return false;
-          }
-          return true;
-        }
         ctx.system = {
           getAllConversation: function(filter){
-            if (typeof filter === "function") return __sb.convs.filter(filter);
-            // 兼容：对象筛选保留一个版本，下个版本移除
-            return __sb.convs.filter(function(item){ return __matchConversation(item, filter); });
+            if (filter === undefined || filter === null) return __sb.convs;
+            if (typeof filter !== "function") {
+              throw new Error("ctx.system.getAllConversation 的 filter 必须是函数，例如 function (c) { return c.days > 30; }");
+            }
+            return __sb.convs.filter(filter);
           },
           getConversation: function(id){ return __lookup("conversations", id); },
           getTemplate: function(id){ return __lookup("templates", id); },
@@ -891,11 +842,11 @@ object SparkScriptEngine {
         };
 
         // 会话结果回调：脚本注册，宿主在「这个会话发送结束」后调用，参数 {id, result, reason}
-        function __registCallback(fn){
+        function __registerCallback(fn){
           if (typeof fn !== "function") throw new Error("ctx.registerCallback 需要一个函数");
           if (__sb.preview) return;
           __sb.callbacks.push(fn);
         }
-        ctx.registerCallback = __registCallback;
+        ctx.registerCallback = __registerCallback;
         """.trimIndent()
 }

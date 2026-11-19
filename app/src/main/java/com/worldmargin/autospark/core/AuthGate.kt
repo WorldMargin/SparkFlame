@@ -52,7 +52,7 @@ object AuthGate {
     @Volatile
     private var verdict = UNKNOWN
 
-    /** 模块 APK 路径（宿主进程里由框架给出，用于直接解析 APK 签名，绕开包可见性限制）。 */
+    /** 模块 APK 路径（宿主进程里由框架给出，用于直接读文件算签名，不经过 PackageManager）。 */
     @Volatile
     private var apkPath: String? = null
 
@@ -71,15 +71,19 @@ object AuthGate {
         )
 
     /**
-     * 模块 APK 的签名是否为我们签发。
+     * 「当前正在运行的这份代码」是不是我们签发的。
      *
-     * 在模块进程里查自己；在抖音进程里两条路都试：
-     * 1. `getPackageInfo`（前提是宿主有包可见性，抖音有 `QUERY_ALL_PACKAGES`，但不能只靠它）；
-     * 2. 框架给的模块 APK 路径 + `getPackageArchiveInfo` 直接解析文件（不依赖可见性）。
+     * 只看实际运行的 APK，绝不查构建期写死的 [MODULE_PACKAGE]：
+     * 只改 manifest 包名再签名的改包，DEX 里仍是正版包名，旧实现会查到设备上装的正版，
+     * 拿到正版签名就放行 —— 实测这种改包确实绕过了闸门。
      *
-     * 任一路径取到的证书里有期望值即通过；取不到任何证书（框架 / 权限异常）时放行并留日志 ——
-     * 这时连模块本身都读不到，把用户挡在门外没有意义；能读到但摘要不符才算改包。
-     * 未注入期望指纹（没有签名配置的开发构建）时同样跳过。
+     * - 模块进程：读自己的 `applicationInfo.sourceDir`；
+     * - 宿主进程：读框架给出的模块 APK 路径（LSPosed 实际加载的那份）。
+     *
+     * 签名从 APK 文件的 v2/v3 签名块直接解析（见 [ApkFingerprint]），**不调用**
+     * `getPackageInfo` / `getPackageArchiveInfo` 取签名 —— 那些返回值能被 Xposed hook 成伪造值。
+     * 所有签名者都必须在期望列表里；指纹读不出来按**不通过**处理，不打开后门。
+     * 只有没注入期望指纹（无签名配置的开发构建）才跳过。
      */
     fun signatureOk(context: Context): Boolean {
         val cached = verdict
@@ -99,11 +103,13 @@ object AuthGate {
      */
     fun isAccepted(context: Context): Boolean {
         acceptCached?.let { return it }
+        // 按「是不是宿主进程」判断，不能用 MODULE_PACKAGE：
+        // 改包只换 manifest 包名时，它的 DEX 里仍是正版包名，会把授权位读串。
         val accepted =
-            if (context.packageName == MODULE_PACKAGE) {
-                SigStore.accepted(context)
-            } else {
+            if (isHost(context)) {
                 ConfigClient.sigAccepted(context) ?: return false
+            } else {
+                SigStore.accepted(context)
             }
         acceptCached = accepted
         return accepted
@@ -132,17 +138,41 @@ object AuthGate {
             ModLog.w("未配置期望签名（无签名配置的开发构建），跳过签名校验")
             return true
         }
-        val actual = certDigests(context)
+        val path = apkPathOf(context)
+        val actual = path?.let { ApkFingerprint.sha256Certificates(it) }.orEmpty()
         if (actual.isEmpty()) {
-            ModLog.w("读不到模块签名（框架或包可见性异常），本次跳过校验")
-            return true
+            // 有期望指纹却读不到实际指纹时不放行：放行就等于给 hook 留后门
+            ModLog.w("无法直接解析当前 APK 的签名，按校验不通过处理")
+            return false
         }
-        return actual.any { digest -> wanted.any { it.contentEquals(digest) } }
+        // PackageManager 只做快速交叉验证：返回值能被 hook，所以不作为判定依据，
+        // 但一旦它给出的签名与「直接读文件」的结果不一致，就说明有人动过手脚。
+        val viaManager = path?.let { packageManagerDigests(context, it) }.orEmpty()
+        if (viaManager.any { pm -> actual.none { it.contentEquals(pm) } }) {
+            ModLog.w("包管理器签名与 APK 文件不一致（可能被 hook），按校验不通过处理")
+            return false
+        }
+
+        // 没有发布签名配置的本地开发构建不会生成清单，整层跳过
+        if (BuildConfig.INTEGRITY_ENABLED && BuildConfig.CONTENT_SHA256.isNotBlank()) {
+            val content = path?.let { ContentFingerprint.sha256(it) }.orEmpty()
+            if (content != BuildConfig.CONTENT_SHA256) {
+                ModLog.w("资源内容哈希不符，按校验不通过处理")
+                return false
+            }
+            if (path == null || !IntegrityManifest.verify(path, content)) {
+                ModLog.w("内容签名清单校验失败，按校验不通过处理")
+                return false
+            }
+        }
+        return actual.all { digest -> wanted.any { it.contentEquals(digest) } }
     }
 
-    /** 取模块的全部签名证书摘要：已安装包 + 框架给出的 APK 文件（哪条通算哪条）。 */
-    private fun certDigests(context: Context): List<ByteArray> {
-        val manager = context.packageManager
+    /** 包管理器看到的当前签名者摘要；只用于与直接解析结果交叉比对。 */
+    private fun packageManagerDigests(
+        context: Context,
+        path: String,
+    ): List<ByteArray> {
         val flags =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 PackageManager.GET_SIGNING_CERTIFICATES
@@ -150,19 +180,49 @@ object AuthGate {
                 @Suppress("DEPRECATION")
                 PackageManager.GET_SIGNATURES
             }
-        val digests = mutableListOf<ByteArray>()
-        runCatching { digestsOf(manager.getPackageInfo(MODULE_PACKAGE, flags)) }
-            .getOrNull()
-            ?.let { digests += it }
-        moduleApkPath()?.let { path ->
-            runCatching { digestsOf(manager.getPackageArchiveInfo(path, flags)) }
-                .getOrNull()
-                ?.let { digests += it }
+        val info =
+            runCatching {
+                val pkg = if (isHost(context)) MODULE_PACKAGE else context.packageName
+                context.packageManager.getPackageInfo(pkg, flags)
+            }.getOrNull()
+                ?: runCatching { context.packageManager.getPackageArchiveInfo(path, flags) }.getOrNull()
+                ?: return emptyList()
+        val certificates =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val signing = info.signingInfo ?: return emptyList()
+                if (signing.hasMultipleSigners()) signing.apkContentsSigners else signing.signingCertificateHistory.take(1).toTypedArray()
+            } else {
+                @Suppress("DEPRECATION")
+                info.signatures ?: return emptyList()
+            }
+        return certificates.mapNotNull { cert ->
+            runCatching { MessageDigest.getInstance("SHA-256").digest(cert.toByteArray()) }.getOrNull()
         }
-        return digests
     }
 
-    /** 框架（LSPosed）加载的模块 APK 路径；模块进程里拿不到（也不需要）。 */
+    private fun isHost(context: Context): Boolean = context.packageName == HOST_PACKAGE
+
+    /**
+     * 定位「当前这份代码」的 APK 文件。路径本身只用来读文件：
+     * 签名与资源哈希都从字节算，不碰 PackageManager 的签名接口
+     * （`getPackageInfo` 返回的 Signature[] 能被 Xposed hook 成任意值）。
+     *
+     * 模块进程用 `applicationInfo.sourceDir`，宿主进程用框架给出的模块 APK 路径；
+     * 拿不到时才按包名换一个路径。
+     */
+    private fun apkPathOf(context: Context): String? {
+        var path = if (isHost(context)) moduleApkPath() else context.applicationInfo?.sourceDir
+        if (path.isNullOrBlank()) {
+            val pkg = if (isHost(context)) MODULE_PACKAGE else context.packageName
+            path = runCatching { context.packageManager.getPackageInfo(pkg, 0) }
+                .getOrNull()
+                ?.applicationInfo
+                ?.sourceDir
+        }
+        return path?.takeIf { it.isNotBlank() }
+    }
+
+    /** 框架（LSPosed）加载的模块 APK 路径；仅在宿主进程用。 */
     private fun moduleApkPath(): String? {
         apkPath?.let { return it }
         val path =
@@ -170,26 +230,6 @@ object AuthGate {
                 ?.takeIf { it.isNotBlank() }
         apkPath = path
         return path
-    }
-
-    /** PackageInfo → 证书 SHA-256 列表（取不到签名返回 null）。 */
-    private fun digestsOf(info: android.content.pm.PackageInfo?): List<ByteArray>? {
-        if (info == null) return null
-        val certificates: Array<out android.content.pm.Signature> =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val signing = info.signingInfo ?: return null
-                if (signing.hasMultipleSigners()) {
-                    signing.apkContentsSigners
-                } else {
-                    signing.signingCertificateHistory
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                info.signatures ?: return null
-            }
-        return certificates.mapNotNull { certificate ->
-            runCatching { MessageDigest.getInstance("SHA-256").digest(certificate.toByteArray()) }.getOrNull()
-        }
     }
 
     /** hex 字符串 → 字节数组（长度不对 / 非法字符返回 null）。 */

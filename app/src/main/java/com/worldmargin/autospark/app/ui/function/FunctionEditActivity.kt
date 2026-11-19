@@ -42,7 +42,6 @@ import com.worldmargin.autospark.app.ui.common.UiKit
  *
  * 保存时由 [SparkFunctionSource] 解析出函数名与形参，挂到 `ctx.functions.<名字>` 供脚本调用；
  * **只允许一个函数** —— 声明之后再写别的内容会被拒绝。
- * 早期版本只存了「函数内部」，打开时会自动补成完整声明，可以继续编辑。
  */
 class FunctionEditActivity : Activity() {
     companion object {

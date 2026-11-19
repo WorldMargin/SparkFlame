@@ -32,7 +32,7 @@ import com.worldmargin.autospark.app.ui.common.UiKit
 /**
  * 宏编辑：名称 / 生效目标（通用模板或具体会话，可多选）/ 脚本内容。
  *
- * 宏在模板脚本**之后**执行，所以能改写 `$spark_result$`；一个宏可以挂到多个模板上，
+ * 宏在模板脚本**之后**执行，所以能改写 `ctx.result`；一个宏可以挂到多个模板上，
  * 一个模板也可以挂多个宏。
  */
 class MacroEditActivity : Activity() {

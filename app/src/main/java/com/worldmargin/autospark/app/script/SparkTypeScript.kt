@@ -15,8 +15,6 @@ import com.worldmargin.autospark.app.config.UserFunction
  * 于是 `ctx.template.` 后面能补全出变量名，表达式编辑页里也能看到自己前面算出来的变量。
  */
 object SparkTypeScript {
-    /** 旧写法：脚本结果变量。新脚本用 `ctx.result`，这里保留声明只为兼容老脚本。 */
-
     fun dts(
         config: SparkConfig,
         templateVars: List<TemplateVar> = emptyList(),

@@ -620,6 +620,13 @@ object AutoSparkBridge {
         traceConversations(context, fetched)
         val written = ConfigClient.putSnapshots(context, snapshots)
         if (!written) return RefreshOutcome(false, "快照写入配置失败（跨进程通道不可用）")
+        // 头像：宿主拉取后推给模块缓存（模块无联网权限）。失败不影响快照刷新。
+        runCatching {
+            // uid 用 peerUid，群聊没有独立用户头像时用 conversationId 兜底
+            val items = snapshots.map { (it.peerUid.ifBlank { it.conversationId }) to it.avatar }
+            val pushed = com.worldmargin.autospark.host.im.AvatarCache.sync(context, items)
+            if (pushed > 0) ModLog.i("补推头像 $pushed 张")
+        }.onFailure { ModLog.w("头像同步失败：${it.message}") }
         // 快照落盘后按保留策略清理：不在已选目标里的会话，模板与发送记录按 30 天宽限期清掉
         ConfigClient.prune(context, now)
         return RefreshOutcome(true, "${snapshots.size} 个会话")

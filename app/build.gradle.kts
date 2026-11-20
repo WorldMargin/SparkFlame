@@ -188,6 +188,16 @@ android {
         buildConfig = true
     }
 
+    // 裸 syscall 读 APK 的 native 库：绕开 xhook 那类 PLT/GOT hook
+    // 用 ndk-build 而非 CMake：本机 CMake 在中文路径下检测编译器会崩溃
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/jni/Android.mk")
+        }
+    }
+    // 与 local.properties 的 ndk.dir 保持一致（无空格路径，ndk-build 不接受带空格的 NDK 路径）
+    ndkVersion = "27.2.12479018"
+
     buildTypes {
         release {
             isMinifyEnabled = true

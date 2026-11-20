@@ -1,17 +1,15 @@
 package com.worldmargin.autospark.core
 
-import java.io.File
 import java.security.MessageDigest
 
 /**
- * 直接从 APK 文件的签名块（APK Signature Scheme v2 / v3 / v3.1）读取证书，算 SHA-256。
+ * 直接从 APK 字节里的签名块（APK Signature Scheme v2 / v3 / v3.1）读取证书，算 SHA-256。
  *
- * 不调用 `PackageManager.getPackageInfo` / `getPackageArchiveInfo`：那两个方法返回的对象可以被
- * Xposed hook 改写（把 `signatures` 换成伪造值），从那里取签名等于没校验。
- * 这里只读文件字节，hook 不到。
+ * 输入是 [NativeFileReader] 用裸 syscall 读出的字节，不是文件路径 —— 全程不调用
+ * File / PackageManager，xhook 那类 PLT/GOT hook 无从下手。
  *
- * 老包只有 v1（META-INF 下的 .RSA）签名时本类返回空，调用方会按「校验不通过」处理，
- * 避免为了兼容旧包又退回可被 hook 的接口。
+ * 老包只有 v1（META-INF 下的 .RSA）签名时本类返回空，调用方按「校验不通过」处理，
+ * 不为了兼容旧包退回可被 hook 的接口。
  */
 object ApkFingerprint {
     private const val V2 = 0x7109871AL
@@ -24,10 +22,9 @@ object ApkFingerprint {
             0x42, 0x6C, 0x6F, 0x63, 0x6B, 0x20, 0x34, 0x32,
         ) // "APK Sig Block 42"
 
-    /** 证书 DER 的 SHA-256 列表；解析失败返回空。 */
-    fun sha256Certificates(path: String): List<ByteArray> =
+    /** 证书 DER 的 SHA-256 列表；输入为 APK 字节，解析失败返回空。 */
+    fun sha256Certificates(data: ByteArray): List<ByteArray> =
         runCatching {
-            val data = File(path).readBytes()
             val eocd = findEocd(data) ?: return@runCatching emptyList()
             val cd = u32(data, eocd + 16)
             if (cd < 24 || cd > data.size) return@runCatching emptyList()

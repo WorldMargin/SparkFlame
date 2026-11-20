@@ -30,32 +30,38 @@ object AvatarLoader {
 
     private const val MAX_EDGE = 256
 
-    /** 把 [url] 的头像装进 [view]；失败/为空时显示 [name] 首字占位图。头像按圆形显示。 */
+    /**
+     * 把头像装进 [view]；失败/为空时显示 [name] 首字占位图。头像按圆形显示。
+     *
+     * [key] 用稳定的用户 id（peerUid），不用 URL —— URL 会随换头像 / CDN 参数变化，
+     * 按 id 存才能始终命中「这个用户当前」的头像。缓存由宿主按同样的 id 写入。
+     */
     fun load(
         context: Context,
         view: ImageView,
+        key: String,
         url: String,
         name: String,
         sizeDp: Int = 42,
     ) {
         clipToCircle(view)
         val size = (sizeDp * context.resources.displayMetrics.density).toInt()
-        view.tag = url
+        view.tag = key
         val placeholder = placeholder(name, size)
-        memory.get(memoryKey(url, name, size))?.let {
+        memory.get(memoryKey(key, size))?.let {
             view.setImageBitmap(it)
             return
         }
         view.setImageBitmap(placeholder)
-        if (url.isBlank()) return
+        if (key.isBlank()) return
 
         pool.execute {
-            val cache = File(avatarDir(context), fileName(url))
+            val cache = File(avatarDir(context), fileName(key))
             val bitmap = if (cache.isFile) decode(cache) else null
             if (bitmap == null) return@execute
-            memory.put(memoryKey(url, name, size), bitmap)
+            memory.put(memoryKey(key, size), bitmap)
             main.post {
-                if (view.tag == url) view.setImageBitmap(bitmap)
+                if (view.tag == key) view.setImageBitmap(bitmap)
             }
         }
     }
@@ -122,14 +128,14 @@ object AvatarLoader {
 
     private fun avatarDir(context: Context): File = File(context.cacheDir, "avatars")
 
-    private fun fileName(url: String): String {
-        val digest = MessageDigest.getInstance("MD5").digest(url.toByteArray(Charsets.UTF_8))
+    /** 用户 id 的 MD5 作为文件名，与宿主推送侧的 keyOf(uid) 一致。 */
+    private fun fileName(key: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(key.toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) } + ".png"
     }
 
     private fun memoryKey(
-        url: String,
-        name: String,
+        key: String,
         size: Int,
-    ): String = if (url.isBlank()) "name:$name:$size" else "$url:$size"
+    ): String = "$key:$size"
 }

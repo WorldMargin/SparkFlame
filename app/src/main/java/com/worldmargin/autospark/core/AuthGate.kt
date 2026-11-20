@@ -139,7 +139,14 @@ object AuthGate {
             return true
         }
         val path = apkPathOf(context)
-        val actual = path?.let { ApkFingerprint.sha256Certificates(it) }.orEmpty()
+        // 用裸 syscall 读一次字节，后面三层都基于这份字节在内存里解析；
+        // 全程不调用 File / ZipFile，xhook 的 PLT/GOT hook 拦不到。
+        val bytes = path?.let { NativeFileReader.readAll(it) }
+        if (bytes == null || bytes.isEmpty()) {
+            ModLog.w("无法读取当前 APK 字节，按校验不通过处理")
+            return false
+        }
+        val actual = ApkFingerprint.sha256Certificates(bytes)
         if (actual.isEmpty()) {
             // 有期望指纹却读不到实际指纹时不放行：放行就等于给 hook 留后门
             ModLog.w("无法直接解析当前 APK 的签名，按校验不通过处理")
@@ -155,12 +162,12 @@ object AuthGate {
 
         // 没有发布签名配置的本地开发构建不会生成清单，整层跳过
         if (BuildConfig.INTEGRITY_ENABLED && BuildConfig.CONTENT_SHA256.isNotBlank()) {
-            val content = path?.let { ContentFingerprint.sha256(it) }.orEmpty()
+            val content = ContentFingerprint.sha256(bytes)
             if (content != BuildConfig.CONTENT_SHA256) {
                 ModLog.w("资源内容哈希不符，按校验不通过处理")
                 return false
             }
-            if (path == null || !IntegrityManifest.verify(path, content)) {
+            if (!IntegrityManifest.verify(bytes, content)) {
                 ModLog.w("内容签名清单校验失败，按校验不通过处理")
                 return false
             }

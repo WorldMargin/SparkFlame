@@ -23,6 +23,13 @@
 -repackageclasses ''
 -allowaccessmodification
 
+# ---- JNI 桥：类名和方法名必须保留，RegisterNatives 按名字查找 ----
+# so 侧不导出 Java_xxx 符号（只有 JNI_OnLoad），但注册映射用的是这两个名字，
+# 因此 R8 不能改。类名保持明文在 DEX 里，是动态注册方案的已知折中。
+-keep class com.worldmargin.autospark.core.NativeFileReader {
+    native <methods>;
+}
+
 # ---- Rhino 脚本引擎：release 必须整包保留 ----
 # Rhino 大量使用反射与按类名查找，被 R8 重命名 / 裁剪后脚本执行会直接失败
 # （症状：模板预览报「预览失败：<混淆后的类名>」）。

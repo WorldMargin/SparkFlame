@@ -6,6 +6,7 @@
 /captures
 /local.properties
 build
+.cxx
 
 # 鏈湴宸ヤ綔绗旇锛屼笉鍏ュ簱
 research/
@@ -19,7 +20,7 @@ app/doumcp-release.jks
 *.keystore
 release-signing.properties
 
-# 构建日志与临时目录
+# 锟斤拷锟斤拷锟斤拷志锟斤拷锟斤拷时目录
 build_log*.txt
 tmp/
 build_status.txt

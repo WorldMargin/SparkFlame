@@ -110,6 +110,17 @@ object ConfigClient {
                 ?.takeIf { it.isNotBlank() }
         }.getOrNull()
 
+    /** 推送一批头像图片（key = URL 的 MD5）。 */
+    fun putAvatars(
+        context: Context,
+        images: Bundle,
+    ): Boolean =
+        runCatching {
+            val extras = Bundle().apply { putBundle(ConfigContract.KEY_IMAGES, images) }
+            context.contentResolver.call(ConfigContract.URI, ConfigContract.METHOD_PUT_AVATARS, null, extras)
+                ?.getBoolean(ConfigContract.KEY_OK) == true
+        }.getOrDefault(false)
+
     /** 推送一批表情资源（版本 + 分片序号 + JSON 负载）。 */
     fun putEmojiChunk(
         context: Context,

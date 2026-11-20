@@ -135,6 +135,9 @@ object ConfigContract {
     /** 当前版本需要的缩略图 key 列表（ArrayList&lt;String&gt;）。 */
     const val KEY_KEYS = "keys"
 
+    /** 写入一批头像图片：Bundle(key = 用户 id 的 MD5, value = byte[])，key 规则与 AvatarLoader.fileName 一致。 */
+    const val METHOD_PUT_AVATARS = "putAvatars"
+
     /** 写入一批表情资源（version / index / total / payload）。 */
     const val METHOD_PUT_EMOJI_CHUNK = "putEmojiChunk"
 
@@ -274,6 +277,12 @@ class ConfigProvider : ContentProvider() {
                 }
             }
 
+            ConfigContract.METHOD_PUT_AVATARS -> {
+                val images = extras?.getBundle(ConfigContract.KEY_IMAGES)
+                val ok = images != null && writeAvatars(context, images)
+                Bundle().apply { putBoolean(ConfigContract.KEY_OK, ok) }
+            }
+
             ConfigContract.METHOD_PUT_EMOJI_CHUNK -> {
                 val version = extras?.getString(ConfigContract.KEY_VERSION)
                 val bytes = extras?.getByteArray(ConfigContract.KEY_BYTES)
@@ -345,6 +354,27 @@ class ConfigProvider : ContentProvider() {
         }.getOrNull()
 
     /** 一批图逐张写进暂存目录；有一张失败就返回 false（整批会在下次触发时重来）。 */
+    /** 头像落盘：key 必须是 32 位 md5（URL 的），文件名为 key.png，与 AvatarLoader 读取口径一致。 */
+    private fun writeAvatars(
+        context: Context,
+        images: Bundle,
+    ): Boolean {
+        var ok = true
+        images.keySet().forEach { key ->
+            val bytes = images.getByteArray(key)
+            if (key.matches(Regex("[0-9a-f]{32}")) && bytes != null && bytes.isNotEmpty() && bytes.size <= 512 * 1024) {
+                runCatching {
+                    val dir = java.io.File(context.cacheDir, "avatars")
+                    dir.mkdirs()
+                    java.io.File(dir, "$key.png").writeBytes(bytes)
+                }.onFailure { ok = false }
+            } else {
+                ok = false
+            }
+        }
+        return ok
+    }
+
     private fun writeStickerImages(
         context: Context,
         images: Bundle,

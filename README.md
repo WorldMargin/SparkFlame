@@ -18,6 +18,10 @@
 > 签名校验不通过的包需要您**手动授权**，否则宿主侧代码不会运行。
 > 如果您需要使用下游仓库的 root 功能，请仔细校验是否为原仓库分发，或自行下载编译源代码。
 >
+> 校验的**文件读取在 native 层用裸 syscall 完成**（见下文「native 层」），不经过 libc 的 `open`，
+> 因此能挡住「签名杀手」一类把文件读取重定向到原始包的改包工具；签名块、资源哈希、内容签名清单
+> 三层校验都基于这份在内存里的字节，不信任可被 hook 的 `PackageManager` 返回值。
+>
 > 如您确有改包需求，**不建议直接改包**，而是 fork 或下载源代码自行更改编译。
 
 ## 下载
@@ -42,6 +46,24 @@
 | `local.properties` | 本机 Android SDK 路径（不入库） |
 | `app/build.gradle.kts` | 只在发版时改 `versionCode` / `versionName`；内容哈希与签名清单由构建任务自动生成 |
 | `docs/manual.md` | 改了功能就同步这里，构建时复制进 App 内文档 |
+
+### native 层（`app/src/main/jni/`）
+
+`libsparkfile.so` 只做一件事：**用裸 `syscall`（`svc #0` 直调 `openat`/`read`/`close`）把 APK 读成字节**，
+不经过 libc 的 `open`，从而绕开 xhook 一类的 PLT/GOT hook。签名块解析、内容哈希、清单验签
+仍由 Kotlin 在这份内存字节上完成，全程不再调用 `File` / `ZipFile` / `PackageManager` 取签名。
+
+导出符号只有 `JNI_OnLoad`：JNI 方法在运行时用 `RegisterNatives` 动态绑定到 Kotlin 侧固定为 `r0` 的
+native 方法（`proguard-rules.pro` 保留该类名与方法名），so 的符号表里看不到「哪个 Java 方法对应哪段
+native 代码」。两个 ABI（`arm64-v8a` / `armeabi-v7a`）各自编译一份，因此分包不再字节相同。
+
+**fork / 换机构建须知**：
+
+- ndk-build 不接受**带空格**的 NDK 路径。把 NDK 放在无空格目录（如 `D:\android-ndk\27.2.12479018`），
+  并在 `local.properties` 写 `ndk.dir=...`；`app/build.gradle.kts` 的 `ndkVersion` 要与之一致。
+- 项目路径含中文时，ndk-build 会把路径打成乱码（报 `APP_BUILD_SCRIPT points to an unknown file`）。
+  可用目录 junction 指到纯 ASCII 路径再构建，例如 `D:\spark-build` → 项目目录，然后从这个 ASCII 路径跑 gradlew。
+- 若读不到 APK 字节，校验按**不通过**处理，不会降级回 `File` 读取（降级等于给 hook 留后门）。
 
 ## 署名与来源
 
@@ -95,6 +117,8 @@
   - **会话选择页**（选会话继承 / 克隆到会话）独立成页：按昵称 / 备注搜索，按标签（多选）或来源筛选，多选后确定
 - **快照与生命周期**：打开抖音、跨天补跑、手动发送之后都会把会话快照写回 App；
   连续 3 次没出现的会话收进「被隐藏」折叠卡片，满 30 天连快照一起删除
+- **头像**：模块不申请网络权限，头像由抖音进程从它自己的缓存里读出后推给模块，断网也能显示；
+  缓存按 `peerUid` 对应（不按会变的头像 URL），换头像或 URL 参数变化都能正确更新，没缓存的显示名字首字
 - **配置按项导出 / 导入**：勾模板自动带上父模板、宏、用到的函数；导入是合并，没勾的部分不动
 
 ## 文档
@@ -106,7 +130,7 @@
 
 ## 构建
 
-需要 JDK 21 + Android SDK（`local.properties` 指向 SDK）。
+需要 JDK 21 + Android SDK（`local.properties` 指向 SDK）+ **Android NDK 27.2.12479018**（native 读文件库，见下文「native 层」）。
 
 ```powershell
 # 仓库根目录
@@ -137,9 +161,10 @@ app/src/main/java/com/worldmargin/autospark/
   WakeActivity.kt               透明空页面：模块被系统停用时把进程拉起来（宿主侧唤醒兜底）
   SettingsInjector.kt           抖音设置页注入「续火花」入口
   core/                         宿主 Context / 反射 / 日志（libxposed 通道）/ 提示
+    NativeFileReader.kt         native 读 APK 字节的 JNI 入口（注册名 r0）
   host/                         跑在抖音进程
     bridge/                     扫会话写快照、渲染脚本发消息、手动发送、跨天值守、宿主简报
-    im/                         会话列表 + 消息发送（IM 能力桥）
+    im/                         会话列表 + 消息发送（IM 能力桥）+ 头像缓存推送
     account/                    当前账号
   app/                          管理界面
     config/                     配置模型 + 编解码 + 模板 / 变量 / 宏 / 函数组装
@@ -147,6 +172,7 @@ app/src/main/java/com/worldmargin/autospark/
     editor/                     WebView + CodeMirror 6 编辑器
     provider/                   跨进程配置通道（ContentProvider）+ 唤醒广播
     ui/                         设置 / 模板 / 会话 / 宏 / 函数 / 变量 / 文档等页面
+app/src/main/jni/                native 读文件库（Android.mk / Application.mk / spark_file.c）
 app/src/main/assets/cm6/        CodeMirror 6 离线资源（editor.js / ts.js / tslibs.js / completions.js）
 app/src/main/assets/docs/       使用文档（构建时从仓库同步）
 docs/manual.md                  使用文档唯一入库来源

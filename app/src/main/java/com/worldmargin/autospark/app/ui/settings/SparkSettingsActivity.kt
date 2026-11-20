@@ -49,6 +49,7 @@ import com.worldmargin.autospark.app.config.UserFunction
 import com.worldmargin.autospark.app.provider.ConfigContract
 import com.worldmargin.autospark.app.script.PreviewData
 import com.worldmargin.autospark.app.script.SparkScriptEngine
+import com.worldmargin.autospark.app.config.ConfigClient
 import com.worldmargin.autospark.app.config.ConfigStore
 import com.worldmargin.autospark.app.config.SigStore
 import com.worldmargin.autospark.core.AuthGate
@@ -281,6 +282,15 @@ class SparkSettingsActivity : Activity() {
         root.padSystemBars()
         setContentView(root)
         installGuideBubble()
+        // 定时自启：按配置重排闹钟；冷启动补跑一次（划掉期间漏的那天，打开即补）
+        com.worldmargin.autospark.app.provider.AutoWakeScheduler.reschedule(this)
+        runCatching {
+            val cfg = ConfigStore.load(this)
+            val last = ConfigClient.read(this)?.hostAliveAt ?: 0L
+            if (cfg.autoWakeEnabled && System.currentTimeMillis() - last > 10 * 60 * 1000L) {
+                com.worldmargin.autospark.app.provider.AutoWakeScheduler.wakeDouyinNow(this)
+            }
+        }
     }
 
     override fun onResume() {
@@ -928,46 +938,170 @@ class SparkSettingsActivity : Activity() {
                         addView(text("每次刷新会话都会重扫；总开关关闭时只扫描不发送。", 12f, COLOR_DIM))
                     },
                 )
-                body.addView(sectionTitle("署名与来源（点一下可跳转）"))
+                body.addView(sectionTitle("项目沿革（点一下可跳转）"))
                 body.addView(
-                    linkRow(
-                        title = "原仓库 · yfishyon/doumcp",
-                        url = "https://github.com/yfishyon/doumcp",
-                        desc = "抖音逆向与注入能力的基础（Apache-2.0）",
-                    ),
-                )
-                body.addView(
-                    linkRow(
-                        title = "重写版 · WorldMargin/SparkFlame",
-                        url = "https://gitee.com/WorldMargin/SparkFlame",
-                        desc = "本模块：模板 / 宏 / 函数 + Monaco 编辑器",
-                    ),
-                )
-                body.addView(
-                    linkRow(
-                        title = "WorldMargin",
-                        url = "https://gitee.com/WorldMargin",
-                        desc = "模板 / 宏 / 函数 这套思路，以及 DouYinSpark 油猴脚本原作",
-                    ),
-                )
-                body.addView(
-                    linkRow(
-                        title = "DeepSeek",
-                        url = "https://www.deepseek.com",
-                        desc = "把 DouYinSpark 油猴脚本的完整逻辑迁移至安卓",
-                    ),
-                )
-                body.addView(
-                    text(
-                        "本模块 fork 自 doumcp（Apache-2.0 许可），只保留「续火花」功能；" +
-                            "界面、脚本引擎、模板与宏体系为重写。",
-                        12f,
-                        COLOR_DIM,
-                    ).apply { setPadding(dp(2), dp(8), 0, 0) },
+                    card().apply {
+                        addView(
+                            historyRow(
+                                glyph = UiKit.Icons.GIT_COMMIT,
+                                label = "原始项目 · doumcp",
+                                url = "https://github.com/yfishyon/doumcp",
+                                accent = false,
+                            ),
+                        )
+                        addView(
+                            historyRow(
+                                glyph = UiKit.Icons.GIT_MERGE,
+                                label = "Fork · WorldMargin/SparkFlame（本项目）",
+                                url = "https://gitee.com/WorldMargin/SparkFlame",
+                                accent = true,
+                            ).apply { setPadding(0, dp(4), 0, 0) },
+                        )
+                    },
                 )
             }
         }
         return column().apply { addView(scroll().apply { addView(body) }) }
+    }
+
+    /** 关于页「项目沿革」里的一行：git 图标 + 标签 + 右箭头，整行可点跳转。 */
+    private fun historyRow(
+        glyph: String,
+        label: String,
+        url: String,
+        accent: Boolean,
+    ): View =
+        row().apply {
+            addView(icon(glyph, 16f, if (accent) UiKit.COLOR_ACCENT else COLOR_DIM).apply { setPadding(0, 0, dp(8), 0) })
+            addView(
+                text(label, 13f, COLOR_TEXT).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                },
+            )
+            addView(icon(UiKit.Icons.CHEVRON_RIGHT, 14f, COLOR_DIM))
+            isClickable = true
+            setOnClickListener { openUrl(url) }
+        }
+
+    /** 定时时刻选择器：24 小时制，选完写配置 + 重排闹钟 + 重绘。 */
+    private fun showWakeTimePicker(currentMinute: Int) {
+        val hour = currentMinute / 60
+        val minute = currentMinute % 60
+        android.app.TimePickerDialog(
+            this,
+            { _, h, m ->
+                ConfigStore.update(this) { it.copy(autoWakeMinute = h * 60 + m) }
+                com.worldmargin.autospark.app.provider.AutoWakeScheduler.reschedule(this)
+                render()
+            },
+            hour,
+            minute,
+            true, // 24 小时制
+        ).show()
+    }
+
+    /** 引导卡片里的圆角按钮：主按钮蓝底白字，次按钮灰底深字，禁用态变淡。 */
+    private fun guideButton(
+        label: String,
+        primary: Boolean,
+        enabled: Boolean = true,
+        onClick: () -> Unit,
+    ): View =
+        text(label).apply {
+            background = rounded(
+                when {
+                    !enabled -> 0xFFE8E8EC.toInt()
+                    primary -> COLOR_ACCENT
+                    else -> COLOR_CARD
+                },
+                8,
+            )
+            setTextColor(
+                when {
+                    !enabled -> COLOR_DIM
+                    primary -> 0xFFFFFFFF.toInt()
+                    else -> COLOR_TEXT
+                },
+            )
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            isEnabled = enabled
+            setOnClickListener { onClick() }
+        }
+
+    /** OEM 后台保活引导卡片：品牌 / 电池状态 + 两个跳转按钮 + 手动路径兜底。 */
+    private fun oemGuideCard(): View {
+        val guide = com.worldmargin.autospark.app.provider.OemBatteryGuide
+        val ignored = guide.isIgnoringBatteryOptimizations(this)
+        return card().apply {
+            addView(
+                column().apply {
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    addView(text("后台运行设置", 14f, COLOR_TEXT, bold = true))
+                    addView(
+                        row().apply {
+                            setPadding(0, dp(8), 0, 0)
+                            addView(text("机型", 12f, COLOR_DIM))
+                            addView(
+                                text(guide.brand(), 12f, COLOR_TEXT).apply {
+                                    setPadding(dp(8), 0, 0, 0)
+                                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                },
+                            )
+                        },
+                    )
+                    addView(
+                        row().apply {
+                            setPadding(0, dp(4), 0, 0)
+                            addView(text("电池优化", 12f, COLOR_DIM))
+                            addView(
+                                text(
+                                    if (ignored) "已加入白名单 ✓" else "未优化（定时可能被冻结）",
+                                    12f,
+                                    if (ignored) COLOR_ACCENT else COLOR_DIM,
+                                ).apply {
+                                    setPadding(dp(8), 0, 0, 0)
+                                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                },
+                            )
+                        },
+                    )
+                    addView(
+                        row().apply {
+                            setPadding(0, dp(14), 0, dp(2))
+                            addView(
+                                guideButton("开启自启动", primary = true) {
+                                    guide.openAutoStartSettings(this@SparkSettingsActivity)
+                                }.apply {
+                                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                },
+                            )
+                            addView(
+                                guideButton(
+                                    if (ignored) "电池已不优化 ✓" else "设为电池不优化",
+                                    primary = !ignored,
+                                    enabled = !ignored,
+                                ) {
+                                    guide.requestIgnoreBatteryOptimizations(this@SparkSettingsActivity)
+                                }.apply {
+                                    layoutParams =
+                                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                            marginStart = dp(10)
+                                        }
+                                },
+                            )
+                        },
+                    )
+                    addView(
+                        text("跳转失败时手动设置：", 11f, COLOR_DIM).apply { setPadding(0, dp(12), 0, 0) },
+                    )
+                    addView(
+                        text(guide.manualPath(), 11f, COLOR_DIM).apply { setPadding(0, dp(4), 0, 0) },
+                    )
+                },
+            )
+        }
     }
 
     /** 二级页里的一行「名称 —— 值」卡片。 */
@@ -3991,8 +4125,103 @@ class SparkSettingsActivity : Activity() {
             .show()
     }
 
+    /** 运行设置页「定时自启」折叠状态（跨重绘保持）。 */
+    private var autoWakePanelOpen = false
+
     private fun buildSegmentsPage(config: SparkConfig): View {
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
+
+        // 定时自启 + 后台运行设置：同一个折叠面板，开关常驻标题行
+        body.addView(
+            card().apply {
+                val inner =
+                    column().apply {
+                        visibility = if (autoWakePanelOpen) android.view.View.VISIBLE else android.view.View.GONE
+                        addView(
+                            text(
+                                "定时到点会拉起抖音进程让模块注入并跑一轮续火花。国产 ROM 还需下面两步放行后台，否则闹钟到点也不执行。",
+                                12f,
+                                COLOR_DIM,
+                            ).apply { setPadding(dp(14), dp(2), dp(14), dp(8)) },
+                        )
+                        addView(oemGuideCard().apply { setPadding(0, 0, 0, dp(8)) })
+                    }
+                val chevron = icon(if (autoWakePanelOpen) UiKit.Icons.FOLD else UiKit.Icons.UNFOLD, 15f, COLOR_DIM)
+                addView(
+                    row().apply {
+                        setPadding(dp(14), dp(8), dp(10), dp(8))
+                        // 左半：文字 + 开关，点击只切开关（不碰箭头）
+                        addView(
+                            row().apply {
+                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                addView(
+                                    column().apply {
+                                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                        addView(text("定时自启续火花", 15f, COLOR_TEXT, bold = true))
+                                        val timeLabel =
+                                            text(
+                                                "每天 ${"%02d:%02d".format(config.autoWakeMinute / 60, config.autoWakeMinute % 60)} 拉起抖音 · 点此改时间",
+                                                11f,
+                                                COLOR_ACCENT,
+                                            ).apply {
+                                                setPadding(0, dp(3), 0, 0)
+                                                isClickable = true
+                                                setOnClickListener { showWakeTimePicker(config.autoWakeMinute) }
+                                            }
+                                        addView(timeLabel)
+                                    },
+                                )
+                                val sw =
+                                    android.widget.Switch(this@SparkSettingsActivity).apply {
+                                        isChecked = config.autoWakeEnabled
+                                        isClickable = false
+                                        isFocusable = false
+                                    }
+                                addView(sw.apply { setPadding(dp(8), 0, dp(4), 0) })
+                                isClickable = true
+                                setOnClickListener {
+                                    val next = !sw.isChecked
+                                    if (next && !com.worldmargin.autospark.app.provider.OemBatteryGuide.isIgnoringBatteryOptimizations(this@SparkSettingsActivity)) {
+                                        // 没权限：展开面板要求先设置，开关不打开
+                                        sw.isChecked = false
+                                        if (!autoWakePanelOpen) {
+                                            autoWakePanelOpen = true
+                                            this@SparkSettingsActivity.animateFold(inner, true, chevron)
+                                        }
+                                        Toast.makeText(
+                                            this@SparkSettingsActivity,
+                                            "请先完成下面的「电池不优化」设置，再打开开关",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                        return@setOnClickListener
+                                    }
+                                    sw.isChecked = next
+                                    ConfigStore.update(this@SparkSettingsActivity) {
+                                        it.copy(autoWakeEnabled = next)
+                                    }
+                                    com.worldmargin.autospark.app.provider.AutoWakeScheduler.reschedule(this@SparkSettingsActivity)
+                                }
+                            },
+                        )
+                        // 右半：箭头独立点击区，加宽热区，只折叠不切开关
+                        addView(
+                            LinearLayout(this@SparkSettingsActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = android.view.Gravity.CENTER
+                                setPadding(dp(12), dp(12), dp(4), dp(12))
+                                addView(chevron)
+                                isClickable = true
+                                setOnClickListener {
+                                    autoWakePanelOpen = !autoWakePanelOpen
+                                    this@SparkSettingsActivity.animateFold(inner, autoWakePanelOpen, chevron)
+                                }
+                            },
+                        )
+                    },
+                )
+                addView(inner)
+            },
+        )
 
         body.addView(sectionTitle("资源刷新时机"))
         body.addView(
@@ -4132,7 +4361,7 @@ class SparkSettingsActivity : Activity() {
 
         body.addView(sectionTitle("更多"))
         body.addView(
-            menuRow(UiKit.Icons.DEBUG_ALT, "运行设置", "") {
+            menuRow(UiKit.Icons.DEBUG_ALT, "运行设置", "定时自启 / 资源刷新 / 贴纸") {
                 openSubPage(SUB_SEGMENTS)
             },
         )
@@ -4175,6 +4404,11 @@ class SparkSettingsActivity : Activity() {
         body.addView(
             menuRow(UiKit.Icons.INFO, "关于", "版本与配置文件位置") {
                 openSubPage(SUB_ABOUT)
+            },
+        )
+        body.addView(
+            menuRow(UiKit.Icons.LAW, "开源许可证", "Apache-2.0 / SFAL-1.0 / 署名要求") {
+                startActivity(Intent(this, LicenseActivity::class.java))
             },
         )
 

@@ -73,6 +73,18 @@ object UiKit {
         /** 全选（list-selection）：长按工具条上「全选」用它。 */
         const val SELECTION = "\ueb85"
 
+        /** 法律 / 许可证（codicon law, \ueb12）：开源许可证页入口。 */
+        const val LAW = "\ueb12"
+
+        /** 分叉（codicon repo-forked, \uea63）：关于页声明 fork 链。 */
+        const val REPO_FORKED = "\uea63"
+
+        /** 原始项目（codicon git-commit, \ueafc）：关于页 fork 链的起点。 */
+        const val GIT_COMMIT = "\ueafc"
+
+        /** 分叉（codicon git-merge, \ueafe）：关于页 fork 链的箭头。 */
+        const val GIT_MERGE = "\ueafe"
+
         /** 模板变量（variable-group）：变量入口用它。 */
         const val VARIABLE_GROUP = "\uebb8"
         const val PREVIEW = "\ueb2f"

@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 3. 抖音设置页注入「续火花」入口，点开模块自己的管理界面。
  */
 class ModuleMain : XposedModule() {
+
     @Volatile
     private var hostClassLoader: ClassLoader? = null
 
@@ -43,11 +44,12 @@ class ModuleMain : XposedModule() {
     private val gateWatching = AtomicBoolean(false)
 
     override fun onModuleLoaded(param: ModuleLoadedParam) {
+        HostRuntime.processName = param.processName
         ModLog.bind(this)
         HostRuntime.module = this
-        HostRuntime.processName = param.processName
         ModLog.i("onModuleLoaded: ${param.processName}")
     }
+
 
     override fun onPackageReady(param: PackageReadyParam) {
         if (HostRuntime.processName != param.packageName) return

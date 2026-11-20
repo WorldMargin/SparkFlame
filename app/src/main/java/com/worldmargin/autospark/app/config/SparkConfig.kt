@@ -217,6 +217,10 @@ data class SparkConfig(
     val resRefreshOnExpire: Boolean = false,
     /** 超过多少天未刷新则打开时刷新（0 = 不按时间刷新）。 */
     val resRefreshDays: Int = 7,
+    /** 定时自启：到点拉起抖音进程让模块注入并跑一轮续火花（setAlarmClock，零权限）。 */
+    val autoWakeEnabled: Boolean = false,
+    /** 定时自启的时刻（分钟，0-1439），默认 08:00。 */
+    val autoWakeMinute: Int = 480,
     /**
      * 宿主（抖音进程）最近一次运行的简报：快照刷新是否成功、失败原因、续火花结果。
      * 本机 LSPosed 日志不可用，这是唯一能让管理界面看到宿主侧状态的通道。
@@ -822,6 +826,8 @@ object ConfigCodec {
     private const val KEY_RES_DOUYIN = "resRefreshOnDouyin"
     private const val KEY_RES_ON_EXPIRE = "resRefreshOnExpire"
     private const val KEY_RES_DAYS = "resRefreshDays"
+    private const val KEY_AUTO_WAKE_ENABLED = "autoWakeEnabled"
+    private const val KEY_AUTO_WAKE_MINUTE = "autoWakeMinute"
     private const val KEY_MAX_COMMITS = "maxCommits"
     private const val KEY_HOST_NOTE = "hostNote"
     private const val KEY_HOST_NOTE_AT = "hostNoteAt"
@@ -999,6 +1005,8 @@ object ConfigCodec {
             .put(KEY_RES_DOUYIN, config.resRefreshOnDouyin)
             .put(KEY_RES_ON_EXPIRE, config.resRefreshOnExpire)
             .put(KEY_RES_DAYS, config.resRefreshDays)
+            .put(KEY_AUTO_WAKE_ENABLED, config.autoWakeEnabled)
+            .put(KEY_AUTO_WAKE_MINUTE, config.autoWakeMinute)
             .put(KEY_MAX_COMMITS, config.maxCommits)
             .put(KEY_HOST_NOTE, config.hostNote)
             .put(KEY_HOST_NOTE_AT, config.hostNoteAt)
@@ -1169,6 +1177,8 @@ object ConfigCodec {
             resRefreshOnDouyin = root.optBoolean(KEY_RES_DOUYIN, true),
             resRefreshOnExpire = root.optBoolean(KEY_RES_ON_EXPIRE, false),
             resRefreshDays = root.optInt(KEY_RES_DAYS, 7).coerceIn(0, 90),
+            autoWakeEnabled = root.optBoolean(KEY_AUTO_WAKE_ENABLED, false),
+            autoWakeMinute = root.optInt(KEY_AUTO_WAKE_MINUTE, 480).coerceIn(0, 1439),
             maxCommits = root.optInt(KEY_MAX_COMMITS, 3).coerceIn(1, 20),
             hostNote = root.optString(KEY_HOST_NOTE),
             hostNoteAt = root.optLong(KEY_HOST_NOTE_AT),

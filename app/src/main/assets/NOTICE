@@ -1,0 +1,112 @@
+# SparkFlame (星火燎原) — 开源声明与署名
+
+Copyright 2026 WorldMargin
+
+---
+
+## 1. 上游声明 / Upstream attribution
+
+
+本项目的原始代码 fork 自以下开源项目，其版权归原作者所有：
+
+    yfishyon/doumcp
+    https://github.com/yfishyon/doumcp
+    Copyright 2026 yfishyon and the doumcp contributors
+    Licensed under the Apache License, Version 2.0
+
+本项目在其基础上只保留「续火花」链路；界面、脚本引擎、模板 / 变量 / 宏 /
+函数体系、CodeMirror 编辑器接入、内容签名校验、native 读文件层等均为重写或新增。
+
+    This product includes software developed by yfishyon/doumcp
+    (https://github.com/yfishyon/doumcp), licensed under the Apache
+    License, Version 2.0.
+
+## 2. 本项目声明 / This project
+
+    SparkFlame (星火燎原)
+    Copyright 2026 WorldMargin
+    https://gitee.com/WorldMargin/SparkFlame
+    https://github.com/WorldMargin/SparkFlame
+
+本项目采用**双协议**：
+
+- **历史代码**（v1.6.2 及之前已发布的部分）：Apache License 2.0，见 `LICENSE`。
+- **新增代码**（v1.6.3 起的全新文件）：SparkFlame Attribution License 1.0
+  (SFAL-1.0)，见 `LICENSE.SPARKFLAME.md`。该文件头带 `SPDX-License-Identifier: SFAL-1.0`。
+
+两份协议均允许使用、修改与再分发；SFAL-1.0 额外要求在 fork 时显著署名。
+
+    Licensed under the Apache License, Version 2.0 for historical code,
+    and under the SparkFlame Attribution License 1.0 (SFAL-1.0) for
+    newly added source files from v1.6.3 onward. See LICENSE and
+    LICENSE.SPARKFLAME.md for the full terms.
+
+## 3. Fork / 衍生作品的署名要求（Attribution requirements for forks and derivative works）
+
+若你 fork、修改或再分发本项目（无论源码或二进制形式），两份协议都要求：
+
+1. 完整保留本 NOTICE 文件与 LICENSE / LICENSE.SPARKFLAME.md，
+      不得删除或改写其中的归属声明；
+2. 在项目的贡献者 / 致谢 / 署名位置（README 的 Contributors /
+      Acknowledgements 或同等显著位置）**显著标注 WorldMargin**，
+      并注明你的作品衍生自 SparkFlame，附上来源链接：
+      https://gitee.com/WorldMargin/SparkFlame
+3. 同时保留第 1 节中上游 yfishyon/doumcp 的版权声明；
+4. 不得将衍生作品宣称为 SparkFlame 的官方版本或经官方认可的版本。
+
+对 v1.6.3 起的全新文件，上述署名要求是 SFAL-1.0 第 2 节的**明确合同条款**；
+对历史 Apache-2.0 代码，这些是第 4(d) 条所允许的**归属声明要求**。
+两者都用于标识代码来源，不限制许可证授予的使用、修改与再分发权利。
+
+    If you fork, modify, or redistribute this project, in source or binary
+    form, you MUST retain this NOTICE and the LICENSE file, prominently
+    credit "WorldMargin" and this project's origin in your contributors or
+    acknowledgements section, and retain the upstream attribution to
+    yfishyon/doumcp. You may not present the derivative as an official
+    SparkFlame build. These are attribution requirements under Section 4(d)
+    of the Apache License 2.0 and do not restrict the rights granted by it.
+
+---
+
+## 4. 内置第三方组件 / Bundled third-party components
+
+本项目在 assets 中内置以下开源组件，其版权与许可声明如下（重新分发时须一并保留）：
+
+### CodeMirror 6 — MIT License
+
+    Copyright (c) 2018-2026 by Marijn Haverbeke and others
+    https://codemirror.net/
+    Licensed under the MIT License.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+内置文件：`assets/cm6/*`（editor.js / ts.js / tslibs.js / completions.js / stickers.js / index.html）。
+
+### codicon (Microsoft VS Code Codicons) — CC BY 4.0
+
+    Codicons
+    Copyright (c) Microsoft Corporation
+    https://github.com/microsoft/vscode-codicons
+    Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0).
+    https://creativecommons.org/licenses/by/4.0/
+
+    图标字体 `assets/fonts/codicon.ttf` 来自 @vscode/codicons，
+    依据 CC BY 4.0 使用，并已在此署名。许可全文见 `assets/LICENSE-CODICON.txt`。
+
+### Rhino (Mozilla) — MPL 2.0
+
+    Rhino is licensed under the Mozilla Public License, v. 2.0.
+    https://github.com/mozilla/rhino
+
+    完整许可文本由构建工具自动打包进 APK 的 META-INF/NOTICE-tools.txt。
+
+### 其它依赖
+
+其余第三方库（如 AndroidX、libxposed 等）的许可声明见 APK 内
+`META-INF/` 下由构建工具生成的 NOTICE / LICENSE 文件。

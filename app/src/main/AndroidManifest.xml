@@ -2,9 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-        不申请任何权限：模块只读写自己的配置 / 缓存，不发网络请求。
-        进度头像走「本地缓存 → 名字首字占位图」，没有网也能用。
+        只申请 RECEIVE_BOOT_COMPLETED（普通权限，非危险级）：开机后重排定时自启闹钟。
+        模块不联网、不读外部数据；头像走本地缓存 → 名字首字占位图。
     -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 引导用户把本 App 加入电池优化白名单（普通权限，非危险级） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:description="@string/spark_description"
@@ -23,6 +26,22 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.worldmargin.autospark.action.WAKE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 定时自启：三层冗余（alarm + JobScheduler + 开机），零危险权限 -->
+        <receiver
+            android:name=".app.provider.AutoWakeScheduler$WakeReceiver"
+            android:exported="false" />
+        <service
+            android:name=".app.provider.AutoWakeScheduler$WakeJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <receiver
+            android:name=".app.provider.AutoWakeScheduler$BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
@@ -87,6 +106,14 @@
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".app.ui.settings.LicenseActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+        <activity
+            android:name=".app.ui.settings.LicenseDetailActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
             <activity
             android:name=".app.ui.preview.PreviewActivity"
             android:exported="false"

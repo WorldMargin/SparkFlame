@@ -183,4 +183,14 @@ tools/                          补全表 / tslibs 生成脚本
 
 ## 许可
 
-沿用上游的 **Apache License 2.0**（见 `LICENSE`）。二次分发请保留许可与上述署名。
+本项目采用**双协议**（完整声明见 `NOTICE`）：
+
+- **历史代码**（v1.6.2 及之前）：**Apache License 2.0**（`LICENSE`），沿用上游许可。
+- **新增代码**（v1.6.3 起的全新文件）：**SparkFlame Attribution License 1.0 / SFAL-1.0**
+  （`LICENSE.SPARKFLAME.md`），文件头带 `SPDX-License-Identifier: SFAL-1.0`。
+
+两份协议都允许自由使用、修改与再分发（含商用与闭源）。差别在于署名：
+fork / 二次分发时，须在你的**贡献者 / 致谢位置显著标注 WorldMargin**、注明衍生自
+SparkFlame 并附来源链接，同时保留上游 `yfishyon/doumcp` 的版权声明与全部协议文件。
+对历史代码这是 Apache-2.0 第 4(d) 条的归属声明要求，对新增代码这是 SFAL-1.0 第 2 节的
+明确条款——两者都是署名要求，不限制许可证授予的权利。

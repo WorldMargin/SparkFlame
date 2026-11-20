@@ -153,8 +153,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // 固定版本号：历史压缩后提交数会变小，不能再拿它当 versionCode（会触发降级安装失败）
-        versionCode = 11110
-        versionName = "v1.6.1"
+        versionCode = 11111
+        versionName = "v1.6.2"
 
         // 模块标识一律通过 BuildConfig 注入，源码里不写死
         buildConfigField("String", "MODULE_PACKAGE", "\"$modulePackage\"")

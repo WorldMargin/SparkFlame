@@ -48,6 +48,11 @@ object AuthGate {
             .filter { it.size == DIGEST_SIZE }
     }
 
+    /** 最近一次签名校验的各阶段耗时字符串（冷启动诊断用，由 ModuleMain 统一写宿主简报）。 */
+    @Volatile
+    var lastTiming: String = ""
+        private set
+
     /** 签名校验结论（进程内不变：重装 / 更新会让进程重建）。 */
     @Volatile
     private var verdict = UNKNOWN
@@ -133,20 +138,31 @@ object AuthGate {
     // ------------------------------------------------------------ 内部
 
     private fun decide(context: Context): Boolean {
+        // 冷启动诊断：各阶段耗时（毫秒）。仅打点，不改变任何校验逻辑。
+        var t = System.currentTimeMillis()
+        val timings = StringBuilder()
+        fun mark(label: String) {
+            val now = System.currentTimeMillis()
+            timings.append(" $label=${now - t}ms")
+            t = now
+        }
         val wanted = expected
         if (wanted.isEmpty()) {
             ModLog.w("未配置期望签名（无签名配置的开发构建），跳过签名校验")
             return true
         }
         val path = apkPathOf(context)
+        mark("路径")
         // 用裸 syscall 读一次字节，后面三层都基于这份字节在内存里解析；
         // 全程不调用 File / ZipFile，xhook 的 PLT/GOT hook 拦不到。
         val bytes = path?.let { NativeFileReader.readAll(it) }
+        mark("读包")
         if (bytes == null || bytes.isEmpty()) {
             ModLog.w("无法读取当前 APK 字节，按校验不通过处理")
             return false
         }
         val actual = ApkFingerprint.sha256Certificates(bytes)
+        mark("签名解析")
         if (actual.isEmpty()) {
             // 有期望指纹却读不到实际指纹时不放行：放行就等于给 hook 留后门
             ModLog.w("无法直接解析当前 APK 的签名，按校验不通过处理")
@@ -155,6 +171,7 @@ object AuthGate {
         // PackageManager 只做快速交叉验证：返回值能被 hook，所以不作为判定依据，
         // 但一旦它给出的签名与「直接读文件」的结果不一致，就说明有人动过手脚。
         val viaManager = path?.let { packageManagerDigests(context, it) }.orEmpty()
+        mark("PM交叉")
         if (viaManager.any { pm -> actual.none { it.contentEquals(pm) } }) {
             ModLog.w("包管理器签名与 APK 文件不一致（可能被 hook），按校验不通过处理")
             return false
@@ -163,6 +180,7 @@ object AuthGate {
         // 没有发布签名配置的本地开发构建不会生成清单，整层跳过
         if (BuildConfig.INTEGRITY_ENABLED && BuildConfig.CONTENT_SHA256.isNotBlank()) {
             val content = ContentFingerprint.sha256(bytes)
+            mark("内容哈希")
             if (content != BuildConfig.CONTENT_SHA256) {
                 ModLog.w("资源内容哈希不符，按校验不通过处理")
                 return false
@@ -171,7 +189,14 @@ object AuthGate {
                 ModLog.w("内容签名清单校验失败，按校验不通过处理")
                 return false
             }
+            mark("清单验签")
         }
+        val timingLine = "签名校验耗时:$timings"
+        lastTiming = timingLine
+        // 只进 ModLog（LSPosed 日志），不写 HostTrace——后者是同步 IPC，
+        // 放在签名同步路径里会反过来拖慢冷启动，污染要测量的耗时本身。
+        // 宿主简报由 ModuleMain 在 attach 完成后连同总耗时一起写一次。
+        ModLog.i(timingLine)
         return actual.all { digest -> wanted.any { it.contentEquals(digest) } }
     }
 

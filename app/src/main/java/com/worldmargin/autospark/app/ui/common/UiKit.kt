@@ -37,6 +37,7 @@ object UiKit {
         const val FIRE = "\ueaf2"
         const val REACTIONS = "\ueb35"
         const val DEBUG_ALT = "\ueb91"
+        const val OUTPUT = "\ueb9d"
         const val TEMPLATE = "\ueaf0"
         const val CODE = "\ueac4"
         const val GEAR = "\ueb51"

@@ -40,8 +40,21 @@ object AutoWakeScheduler {
     private const val JOB_INTERVAL_MS = 15 * 60 * 1000L
     private const val FLAG_FILE = "auto_wake_last_day"
 
-    /** 抖音 exported provider —— 已实测可调起主进程（getType 即可，无需参数）。 */
-    private const val DOUYIN_URI = "content://com.ss.android.ugc.aweme.provider"
+    /**
+     * 抖音 exported provider 列表（主进程优先）。
+     *
+     * 原来只用 `content://com.ss.android.ugc.aweme.provider`（BigImageShareProvider），
+     * 它在 manifest 里是 exported=false —— adb shell 特权能穿透，但普通三方应用
+     * 调用可能被系统拒绝。这里换成一组 exported=true 的 provider 轮询，
+     * 任一调用成功即触发系统 fork 抖音主进程；全部失败才回退旧 URI。
+     *
+     * 判活由宿主心跳（hostAliveAt）负责，provider 只负责「捅一下」把进程拉起来。
+     */
+    private val DOUYIN_URIS =
+        listOf(
+            "content://com.ss.android.ugc.aweme.depths.pre.load", // PreLoadMainProcessProvider：exported、主进程、无权限，本机实测存在
+            "content://com.ss.android.ugc.aweme.provider", // 旧 URI（BigImageShareProvider），exported=false，兜底
+        )
 
     /** 按配置重排所有触发层；开关关闭时全部取消。 */
     fun reschedule(context: Context) {
@@ -54,13 +67,29 @@ object AutoWakeScheduler {
         scheduleJob(context)
     }
 
-    /** 立刻拉起抖音（补跑 / 各层触发共用）。 */
-    fun wakeDouyinNow(context: Context) {
-        runCatching { context.contentResolver.getType(Uri.parse(DOUYIN_URI)) }
+    /** 立刻拉起抖音：依次尝试各 exported provider，任一调用不抛异常即视为成功。 */
+    private fun wakeDouyinNow(context: Context): Boolean {
+        var lastError: Throwable? = null
+        for (uri in DOUYIN_URIS) {
+            val result = runCatching { context.contentResolver.getType(Uri.parse(uri)) }
+            if (result.isSuccess) return true
+            lastError = result.exceptionOrNull()
+        }
+        // 本代码运行在模块 App 进程，ModLog 未 bind（只在抖音进程 bind），
+        // 这里用 android.util.Log 保证日志可见（tag 与宿主侧区分）
+        android.util.Log.w("SparkWake", "所有抖音 provider 均无法拉起进程：${lastError?.message}")
+        return false
+    }
+
+    /** 外部/手动补跑入口（不节流），带日志。 */
+    fun wakeDouyinNowLogged(context: Context, source: String = "手动补跑") {
+        val ok = wakeDouyinNow(context)
+        val alive = ConfigStore.load(context).hostAliveAt
+        WakeLog.addTrigger(context, source, ok, alive)
     }
 
     /** 实际触发逻辑：节流检查后拉抖音。供 alarm/job 共用。 */
-    private fun fireWake(context: Context) {
+    private fun fireWake(context: Context, source: String) {
         val config = ConfigStore.load(context)
         if (!config.autoWakeEnabled) return
         val now = Calendar.getInstance()
@@ -71,12 +100,8 @@ object AutoWakeScheduler {
         val lastDay = runCatching { java.io.File(context.filesDir, FLAG_FILE).readText().trim() }.getOrDefault("")
         if (lastDay == today) return // 今天已拉过，节流
         runCatching { java.io.File(context.filesDir, FLAG_FILE).writeText(today) }
-        wakeDouyinNow(context)
-        runCatching {
-            java.io.File(context.filesDir, "auto_wake_last.txt").writeText(
-                "fired at=${System.currentTimeMillis()} via trigger",
-            )
-        }
+        val ok = wakeDouyinNow(context)
+        WakeLog.addTrigger(context, source, ok, config.hostAliveAt)
     }
 
     private fun todayKey(): String =
@@ -143,7 +168,7 @@ object AutoWakeScheduler {
         ) {
             if (context == null || intent?.action != ACTION_WAKE) return
             val app = context.applicationContext
-            if (ConfigStore.load(app).autoWakeEnabled) wakeDouyinNow(app)
+            if (ConfigStore.load(app).autoWakeEnabled) wakeDouyinNowLogged(app, "定时闹钟")
             reschedule(app)
         }
     }
@@ -151,7 +176,7 @@ object AutoWakeScheduler {
     /** JobScheduler 周期触发：走节流逻辑，一天最多拉一次。 */
     class WakeJobService : JobService() {
         override fun onStartJob(params: JobParameters?): Boolean {
-            fireWake(applicationContext)
+            fireWake(applicationContext, "系统任务")
             jobFinished(params, false)
             return false
         }

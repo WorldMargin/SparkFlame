@@ -17,6 +17,7 @@ import com.worldmargin.autospark.core.AuthGate
 import com.worldmargin.autospark.core.HostRuntime
 import com.worldmargin.autospark.core.ModLog
 import com.worldmargin.autospark.host.bridge.AutoSparkBridge
+import com.worldmargin.autospark.host.bridge.HostTrace
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -43,10 +44,15 @@ class ModuleMain : XposedModule() {
     /** 授权监听是否已挂上（避免重复注册）。 */
     private val gateWatching = AtomicBoolean(false)
 
+    /** 冷启动计时起点（onModuleLoaded → attach 完成）。 */
+    @Volatile
+    private var coldStartAt = 0L
+
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         HostRuntime.processName = param.processName
         ModLog.bind(this)
         HostRuntime.module = this
+        if (coldStartAt == 0L) coldStartAt = System.currentTimeMillis()
         ModLog.i("onModuleLoaded: ${param.processName}")
     }
 
@@ -121,6 +127,16 @@ class ModuleMain : XposedModule() {
                         // 改包且未授权：宿主侧一行代码都不跑，只留一个等授权的监听
                         ModLog.w("签名校验未通过且用户未授权，宿主侧功能不启动")
                         awaitAuthorization(context, application)
+                    }
+                    // 冷启动总耗时（含签名闸门 + 全部 hook 安装），用于定位 2 秒卡在哪
+                    if (coldStartAt > 0L) {
+                        val cost = System.currentTimeMillis() - coldStartAt
+                        val line = "模块冷启动完成：${cost}ms"
+                        ModLog.i(line)
+                        // 签名分阶段耗时在同步路径里只进 ModLog，这里一并写宿主简报（一次 IPC）
+                        val gate = AuthGate.lastTiming
+                        HostTrace.add(context, if (gate.isNotBlank()) "$line（$gate）" else line)
+                        coldStartAt = 0L
                     }
                 }
             }

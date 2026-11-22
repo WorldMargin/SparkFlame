@@ -1545,25 +1545,37 @@ object AutoSparkBridge {
         fetched: Fetched,
     ) {
         val conversations = fetched.conversations ?: return
-        HostTrace.add(context, "IM 会话 ${fetched.total} 条，进入快照的 ${conversations.length()} 条")
-        for (index in 0 until conversations.length()) {
+        val total = conversations.length()
+        HostTrace.add(context, "IM 会话 ${fetched.total} 条，进入快照的 $total 条")
+        // 逐会话明细只保留前 8 条摘要 + 1 条 raw 样本：
+        // 原来每条写 2 行（摘要 + 700 字 raw），200 会话会把「续火花结果」等关键行全部冲出 60 行窗口。
+        val detailLimit = 8
+        var rawSampleLogged = false
+        for (index in 0 until total) {
             val conversation = conversations.optJSONObject(index) ?: continue
-            val name = conversation.optString("remarkName").ifBlank { conversation.optString("name") }
             val spark = conversation.optJSONObject("spark")
-            val summary =
-                if (spark == null) {
-                    "无火花数据"
-                } else {
-                    "hasSpark=${spark.optBoolean("hasSpark")} state=${spark.optInt("state", -1)} " +
-                        "days=${spark.optInt("days")} text=${spark.optString("stateText")} " +
-                        "level=${spark.optString("level")} start=${spark.optLong("start")} end=${spark.optLong("end")} " +
-                        "petElf=${spark.optBoolean("petElf")} relation=${spark.optString("relationType")} " +
-                        "effect=${spark.optString("effectKind")}"
-                }
-            HostTrace.add(context, "$name · $summary")
-            spark?.optString("raw")?.takeIf { it.isNotBlank() }?.let { raw ->
-                HostTrace.add(context, "raw[$name]=${raw.take(700)}")
+            if (index < detailLimit) {
+                val name = conversation.optString("remarkName").ifBlank { conversation.optString("name") }
+                val summary =
+                    if (spark == null) {
+                        "无火花数据"
+                    } else {
+                        "state=${spark.optInt("state", -1)} days=${spark.optInt("days")} " +
+                            "text=${spark.optString("stateText")} level=${spark.optString("level")}"
+                    }
+                HostTrace.add(context, "$name · $summary")
             }
+            // raw 协议串只留一条样本（去掉会话名、截断 200 字），避免刷屏+泄露昵称
+            if (!rawSampleLogged) {
+                val raw = spark?.optString("raw")?.takeIf { it.isNotBlank() }
+                if (raw != null) {
+                    HostTrace.add(context, "raw 样本=${raw.take(200)}")
+                    rawSampleLogged = true
+                }
+            }
+        }
+        if (total > detailLimit) {
+            HostTrace.add(context, "（其余 ${total - detailLimit} 条会话明细已省略）")
         }
     }
 

@@ -19,13 +19,17 @@ object HostTrace {
     private val lines = mutableListOf<String>()
     private val format = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
 
-    /** 新的一轮宿主进程（Application.attach）开始时清空历史，便于判断当前这次启动走到了哪。 */
+    /**
+     * 新一轮宿主进程开始。不再清空历史：冷启动诊断行（签名校验耗时 / 模块冷启动完成）
+     * 是在 attach 阶段写的，比这里（后台线程）更早，清空会把它们抹掉。
+     * 改成加一条分隔行，保留最近 [MAX_LINES] 行窗口内的上一轮尾部供对照。
+     */
     @Synchronized
     fun start(
         context: Context,
         text: String,
     ) {
-        lines.clear()
+        if (lines.isNotEmpty()) lines += "──── 新一轮 ────"
         add(context, text)
     }
 

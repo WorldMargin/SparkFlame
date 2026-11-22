@@ -135,6 +135,16 @@ class SparkSettingsActivity : Activity() {
     /** 当前打开的设置二级页面（null = 正常标签页）。 */
     private var subPage: String? = null
 
+    /** 二级页的返回目标：从日志中心进日志页时指向日志中心，否则 null（回设置主页）。 */
+    private var subPageBack: String? = null
+
+    /** 统一的二级页返回：回到上级页（可能是日志中心），而不是一律回设置页。 */
+    private fun backSubPage() {
+        subPage = subPageBack
+        subPageBack = null
+        render()
+    }
+
     /** 上一次渲染时的二级页面，用来决定转场方向。 */
     private var lastRenderedSub: String? = null
 
@@ -285,10 +295,11 @@ class SparkSettingsActivity : Activity() {
         // 定时自启：按配置重排闹钟；冷启动补跑一次（划掉期间漏的那天，打开即补）
         com.worldmargin.autospark.app.provider.AutoWakeScheduler.reschedule(this)
         runCatching {
+            com.worldmargin.autospark.app.provider.WakeLog.reconcile(this)
             val cfg = ConfigStore.load(this)
             val last = ConfigClient.read(this)?.hostAliveAt ?: 0L
             if (cfg.autoWakeEnabled && System.currentTimeMillis() - last > 10 * 60 * 1000L) {
-                com.worldmargin.autospark.app.provider.AutoWakeScheduler.wakeDouyinNow(this)
+                com.worldmargin.autospark.app.provider.AutoWakeScheduler.wakeDouyinNowLogged(this, "打开补跑")
             }
         }
     }
@@ -298,6 +309,8 @@ class SparkSettingsActivity : Activity() {
         registerSnapshotReceiver()
         requestResourceSync()
         ensureSignatureNotice()
+        // 自启日志：回前台时结算最近一条的响应/存活（抖音心跳已更新）
+        runCatching { com.worldmargin.autospark.app.provider.WakeLog.reconcile(this) }
         render()
     }
 
@@ -322,8 +335,7 @@ class SparkSettingsActivity : Activity() {
     @Deprecated("系统返回键：二级页面优先回上一级")
     override fun onBackPressed() {
         if (subPage != null) {
-            subPage = null
-            render()
+            backSubPage()
             return
         }
         @Suppress("DEPRECATION")
@@ -695,8 +707,7 @@ class SparkSettingsActivity : Activity() {
                 titleBar(TABS[tab])
             } else {
                 titleBar(SUB_PAGES[sub] ?: "") {
-                    subPage = null
-                    render()
+                    backSubPage()
                 }
             },
         )
@@ -737,9 +748,75 @@ class SparkSettingsActivity : Activity() {
     }
 
     private fun openSubPage(key: String) {
+        // 日志中心 → 状态/自启日志：返回时回日志中心
+        subPageBack =
+            when {
+                subPage == SUB_LOGS && (key == SUB_HOST || key == SUB_WAKE) -> SUB_LOGS
+                else -> null
+            }
         subPage = key
         render()
     }
+
+    /** 日志中心：两张快捷跳转卡片，分别进「状态日志」和「自启日志」。 */
+    private fun buildLogsPage(config: SparkConfig): View {
+        val body =
+            column().apply {
+                setPadding(dp(16), dp(8), dp(16), dp(24))
+                addView(
+                    text("两块日志分开记录：状态日志看抖音进程里模块做了什么，自启日志看定时任务有没有成功拉起抖音。", 12f, COLOR_DIM)
+                        .apply { setPadding(0, 0, 0, dp(12)) },
+                )
+            }
+        val wakeEntries = com.worldmargin.autospark.app.provider.WakeLog.read(this)
+        val wakeSummary =
+            if (wakeEntries.isEmpty()) {
+                "暂无记录"
+            } else {
+                val last = wakeEntries.first()
+                val state = if (last.responded == true) "已响应" else if (last.responded == false) "未响应" else "待观察"
+                "${last.timeText} · $state"
+            }
+        body.addView(
+            logJumpCard(UiKit.Icons.SERVER, "状态日志", hostSummary(config), "抖音进程运行简报、续火花结果、失败原因") {
+                openSubPage(SUB_HOST)
+            },
+        )
+        body.addView(
+            logJumpCard(UiKit.Icons.CHECKLIST, "自启日志", wakeSummary, "定时触发、是否拉起抖音、存活时长（保留 2 天）") {
+                openSubPage(SUB_WAKE)
+            },
+        )
+        return body
+    }
+
+    /** 日志中心里的跳转卡片：图标 + 标题 + 右侧摘要 + 说明 + 箭头，整卡可点。 */
+    private fun logJumpCard(
+        glyph: String,
+        title: String,
+        summary: String,
+        desc: String,
+        onClick: () -> Unit,
+    ): View =
+        card().apply {
+            addView(
+                row().apply {
+                    addView(icon(glyph, 18f, COLOR_ACCENT).apply { setPadding(0, 0, dp(12), 0) })
+                    addView(
+                        column().apply {
+                            addView(text(title, 15f, COLOR_TEXT, bold = true))
+                            addView(text(desc, 12f, COLOR_DIM).apply { setPadding(0, dp(2), 0, 0) })
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        },
+                    )
+                    // 摘要左右都留白：左侧与标题/描述拉开，右侧与箭头拉开，避免文字挨在一起
+                    addView(text(summary, 12f, COLOR_DIM).apply { setPadding(dp(12), 0, dp(10), 0) })
+                    addView(icon(UiKit.Icons.CHEVRON_RIGHT, 14f, COLOR_DIM))
+                },
+            )
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
 
     // -------------------------------------------------------------- 设置二级页
 
@@ -749,6 +826,7 @@ class SparkSettingsActivity : Activity() {
         key: String,
     ): View {
         if (key == SUB_SEGMENTS) return buildSegmentsPage(config)
+        if (key == SUB_LOGS) return buildLogsPage(config)
         val body = column().apply { setPadding(dp(16), dp(8), dp(16), dp(24)) }
         when (key) {
             SUB_OVERVIEW -> {
@@ -809,19 +887,36 @@ class SparkSettingsActivity : Activity() {
             }
 
             SUB_HOST -> {
+                // 独立日志页：纯文本逐行铺满，不用卡片包裹
                 body.addView(
-                    card().apply {
-                        addView(
-                            text(
-                                config.hostNote.ifBlank {
-                                    "宿主还没上报过：模块可能没注入抖音，或抖音本次启动后还没到扫描时间。"
-                                },
-                                12f,
-                                COLOR_DIM,
-                            ),
-                        )
-                    },
+                    text(
+                        config.hostNote.ifBlank {
+                            "宿主还没上报过：模块可能没注入抖音，或抖音本次启动后还没到扫描时间。"
+                        },
+                        13f,
+                        COLOR_TEXT,
+                    ),
                 )
+            }
+
+            SUB_WAKE -> {
+                com.worldmargin.autospark.app.provider.WakeLog.reconcile(this@SparkSettingsActivity)
+                val entries = com.worldmargin.autospark.app.provider.WakeLog.read(this@SparkSettingsActivity)
+                if (entries.isEmpty()) {
+                    body.addView(
+                        text(
+                            "还没有自启记录。开启「定时自启」后，到点触发或打开补跑会记在这里；记录保留 2 天，自动清理。",
+                            13f,
+                            COLOR_DIM,
+                        ).apply { setPadding(0, dp(16), 0, 0) },
+                    )
+                } else {
+                    // 独立日志页：不折叠，逐条铺满，条间细分隔线
+                    entries.forEachIndexed { index, entry ->
+                        if (index > 0) body.addView(divider().apply { setPadding(0, dp(6), 0, dp(6)) })
+                        body.addView(wakeLogRow(entry))
+                    }
+                }
             }
 
             SUB_GUIDE -> {
@@ -981,6 +1076,30 @@ class SparkSettingsActivity : Activity() {
             addView(icon(UiKit.Icons.CHEVRON_RIGHT, 14f, COLOR_DIM))
             isClickable = true
             setOnClickListener { openUrl(url) }
+        }
+
+    /** 自启日志的一行：第一行时间+来源+响应，第二行响应耗时+存活时长。 */
+    private fun wakeLogRow(entry: com.worldmargin.autospark.app.provider.WakeLog.Entry): View =
+        column().apply {
+            val color =
+                when (entry.responded) {
+                    true -> COLOR_TEXT
+                    false -> COLOR_WARN
+                    null -> COLOR_DIM
+                }
+            addView(
+                text("${entry.timeText}  ·  ${entry.source}  ·  ${entry.respondedText}", 13f, color, bold = true),
+            )
+            val detail =
+                buildString {
+                    append(if (entry.launched) "已发出拉起" else "拉起调用失败")
+                    append("  ·  存活 ")
+                    append(entry.aliveText)
+                    if (entry.responseMs != null) {
+                        append("  ·  ${entry.responseMs}ms 内响应")
+                    }
+                }
+            addView(text(detail, 12f, COLOR_DIM).apply { setPadding(0, dp(2), 0, 0) })
         }
 
     /** 定时时刻选择器：24 小时制，选完写配置 + 重排闹钟 + 重绘。 */
@@ -4371,13 +4490,13 @@ class SparkSettingsActivity : Activity() {
             },
         )
         body.addView(
-            menuRow(UiKit.Icons.SWAP, "手动归属", manualSummary(config)) {
-                openSubPage(SUB_ASSIGN)
+            menuRow(UiKit.Icons.OUTPUT, "日志中心", "状态日志 / 自启日志") {
+                openSubPage(SUB_LOGS)
             },
         )
         body.addView(
-            menuRow(UiKit.Icons.SERVER, "宿主状态", hostSummary(config)) {
-                openSubPage(SUB_HOST)
+            menuRow(UiKit.Icons.SWAP, "手动归属", manualSummary(config)) {
+                openSubPage(SUB_ASSIGN)
             },
         )
         val basicList = basicSteps(config)
@@ -4483,7 +4602,9 @@ class SparkSettingsActivity : Activity() {
                 SUB_CONFIG to "配置",
                 SUB_EXPORT to "导出配置",
                 SUB_IMPORT to "导入配置",
-                SUB_HOST to "宿主状态",
+                SUB_HOST to "状态日志",
+                SUB_WAKE to "自启日志",
+                SUB_LOGS to "日志中心",
                 SUB_GUIDE to "新手引导",
                 SUB_ABOUT to "关于",
             )
@@ -4509,6 +4630,8 @@ class SparkSettingsActivity : Activity() {
         const val SUB_EXPORT = "export"
         const val SUB_IMPORT = "import"
         const val SUB_HOST = "host"
+        const val SUB_WAKE = "wake"
+        const val SUB_LOGS = "logs"
         const val SUB_GUIDE = "guide"
         const val SUB_ABOUT = "about"
 
